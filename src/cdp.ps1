@@ -92,7 +92,7 @@ function Connect-CdpPage {
     $uri = New-Object System.Uri($wsUrl)
 
     try {
-        $socket.ConnectAsync($uri, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        [void]$socket.ConnectAsync($uri, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
     }
     catch {
         $detail = $_.Exception.Message
@@ -154,7 +154,7 @@ function Invoke-CdpCommand {
 
     $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
     $segment = [System.ArraySegment[byte]]::new($bytes)
-    $Socket.SendAsync(
+    [void]$Socket.SendAsync(
         $segment,
         [System.Net.WebSockets.WebSocketMessageType]::Text,
         $true,
@@ -271,7 +271,7 @@ function Close-CdpPage {
     if ($Socket) {
         try {
             if ($Socket.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
-                $Socket.CloseAsync(
+                [void]$Socket.CloseAsync(
                     [System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure,
                     "fim",
                     [Threading.CancellationToken]::None
