@@ -20,21 +20,10 @@ function Resolve-RoboPrecosPath {
     return (Join-Path $Root $Path)
 }
 
-function Resolve-PdaCredentialPath {
-    param($Config)
-
-    $persistentDirectory = Join-Path $env:LOCALAPPDATA "RoboPrecos"
-    if (-not (Test-Path -LiteralPath $persistentDirectory)) {
-        New-Item -ItemType Directory -Path $persistentDirectory -Force | Out-Null
-    }
-
-    return (Join-Path $persistentDirectory "pda_credential.json")
-}
-
 function Set-PdaCredential {
     param($Config)
 
-    $credentialPath = Resolve-PdaCredentialPath -Config $Config
+    $credentialPath = Resolve-RoboPrecosPath ([string]$Config.pda.credentialFile)
     $credentialDirectory = Split-Path -Parent $credentialPath
     if (-not (Test-Path -LiteralPath $credentialDirectory)) {
         New-Item -ItemType Directory -Path $credentialDirectory -Force | Out-Null
@@ -62,7 +51,7 @@ function Set-PdaCredential {
 function Get-PdaCredential {
     param($Config)
 
-    $credentialPath = Resolve-PdaCredentialPath -Config $Config
+    $credentialPath = Resolve-RoboPrecosPath ([string]$Config.pda.credentialFile)
     if (-not (Test-Path -LiteralPath $credentialPath)) {
         Set-PdaCredential -Config $Config
     }
