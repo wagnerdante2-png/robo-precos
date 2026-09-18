@@ -41,7 +41,7 @@ function Get-PdaStoreList {
     $stores = @()
     foreach ($line in ($raw -split [Environment]::NewLine)) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
-        $parts = $line -split [char]9, 2
+        $parts = $line -split ([char]9), 2
         if ($parts.Count -lt 2) { continue }
 
         $number = 0
