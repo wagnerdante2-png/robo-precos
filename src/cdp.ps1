@@ -180,38 +180,45 @@ function Invoke-CdpExpression {
         [Parameter(Mandatory = $true)][string]$Expression
     )
 
-    $result = Invoke-CdpCommand -Socket $Socket -Method "Runtime.evaluate" -Params @{
+    $response = Invoke-CdpCommand -Socket $Socket -Method "Runtime.evaluate" -Params @{
         expression = $Expression
         returnByValue = $true
         awaitPromise = $true
         userGesture = $true
     }
 
-    if ($null -eq $result) {
+    if ($null -eq $response) {
         return $null
     }
 
-    $propertyNames = @($result.PSObject.Properties.Name)
-
-    if ($propertyNames -contains "exceptionDetails") {
-        $exceptionDetails = $result.exceptionDetails
-        if ($exceptionDetails) {
-            throw ("Erro JavaScript no navegador: " + ($exceptionDetails | ConvertTo-Json -Depth 8 -Compress))
-        }
+    $exceptionProp = $response.PSObject.Properties["exceptionDetails"]
+    if ($exceptionProp -and $exceptionProp.Value) {
+        throw ("Erro JavaScript no navegador: " + ($exceptionProp.Value | ConvertTo-Json -Depth 12 -Compress))
     }
 
-    if ($propertyNames -contains "result") {
-        $remoteResult = $result.result
-        if ($remoteResult) {
-            $remoteProperties = @($remoteResult.PSObject.Properties.Name)
-            if ($remoteProperties -contains "value") {
-                return $remoteResult.value
-            }
+    $resultProp = $response.PSObject.Properties["result"]
+    if (-not $resultProp) {
+        throw ("Resposta inesperada do Runtime.evaluate: " + ($response | ConvertTo-Json -Depth 12 -Compress))
+    }
 
-            if ($remoteProperties -contains "description" -and -not [string]::IsNullOrWhiteSpace([string]$remoteResult.description)) {
-                return [string]$remoteResult.description
-            }
-        }
+    $remote = $resultProp.Value
+    if ($null -eq $remote) {
+        return $null
+    }
+
+    $valueProp = $remote.PSObject.Properties["value"]
+    if ($valueProp) {
+        return $valueProp.Value
+    }
+
+    $unserializableProp = $remote.PSObject.Properties["unserializableValue"]
+    if ($unserializableProp) {
+        return $unserializableProp.Value
+    }
+
+    $descriptionProp = $remote.PSObject.Properties["description"]
+    if ($descriptionProp -and -not [string]::IsNullOrWhiteSpace([string]$descriptionProp.Value)) {
+        return [string]$descriptionProp.Value
     }
 
     return $null
