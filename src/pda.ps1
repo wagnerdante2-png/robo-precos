@@ -1,0 +1,445 @@
+$script:RoboPrecosConfigPath = Join-Path $Root "config.precos.json"
+$script:RoboPrecosConfigExamplePath = Join-Path $Root "config.precos.example.json"
+
+function Get-RoboPrecosConfig {
+    if (-not (Test-Path -LiteralPath $script:RoboPrecosConfigPath)) {
+        if (-not (Test-Path -LiteralPath $script:RoboPrecosConfigExamplePath)) {
+            throw "Arquivo de configuracao exemplo ausente."
+        }
+        Copy-Item -LiteralPath $script:RoboPrecosConfigExamplePath -Destination $script:RoboPrecosConfigPath -Force
+        Write-RoboLog "config.precos.json criado a partir do exemplo."
+    }
+
+    return (Get-Content -LiteralPath $script:RoboPrecosConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json)
+}
+
+function Resolve-RoboPrecosPath {
+    param([string]$Path)
+
+    if ([IO.Path]::IsPathRooted($Path)) { return $Path }
+    return (Join-Path $Root $Path)
+}
+
+function Set-PdaCredential {
+    param($Config)
+
+    $credentialPath = Resolve-RoboPrecosPath ([string]$Config.pda.credentialFile)
+    $credentialDirectory = Split-Path -Parent $credentialPath
+    if (-not (Test-Path -LiteralPath $credentialDirectory)) {
+        New-Item -ItemType Directory -Path $credentialDirectory -Force | Out-Null
+    }
+
+    Write-Host ""
+    Write-Host "CREDENCIAL PDA - armazenamento local protegido pelo Windows" -ForegroundColor Cyan
+    $username = Read-Host "Usuario PDA"
+    $securePassword = Read-Host "Senha PDA" -AsSecureString
+
+    if ([string]::IsNullOrWhiteSpace($username)) {
+        throw "Usuario PDA nao informado."
+    }
+
+    $payload = [PSCustomObject]@{
+        username = $username.Trim()
+        password = ($securePassword | ConvertFrom-SecureString)
+        createdAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+    }
+
+    $payload | ConvertTo-Json | Set-Content -LiteralPath $credentialPath -Encoding UTF8
+    Write-RoboLog ("Credencial PDA protegida criada em " + $credentialPath)
+}
+
+function Get-PdaCredential {
+    param($Config)
+
+    $credentialPath = Resolve-RoboPrecosPath ([string]$Config.pda.credentialFile)
+    if (-not (Test-Path -LiteralPath $credentialPath)) {
+        Set-PdaCredential -Config $Config
+    }
+
+    $payload = Get-Content -LiteralPath $credentialPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $secure = ConvertTo-SecureString ([string]$payload.password)
+
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+
+    return [PSCustomObject]@{
+        Username = [string]$payload.username
+        Password = $plain
+    }
+}
+
+function Start-RoboPrecosBrowser {
+    param($Config)
+
+    $chromePath = Get-RoboChrome
+    if (-not $chromePath) {
+        throw "Google Chrome nao encontrado."
+    }
+
+    $port = [int]$Config.pda.debugPort
+    $profilePath = Resolve-RoboPrecosPath ([string]$Config.pda.profileDirectory)
+    if (-not (Test-Path -LiteralPath $profilePath)) {
+        New-Item -ItemType Directory -Path $profilePath -Force | Out-Null
+    }
+
+    $baseUrl = [string]$Config.pda.baseUrl
+
+    $endpointReady = $false
+    try {
+        $null = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/json/version" -f $port) -UseBasicParsing -TimeoutSec 1
+        $endpointReady = $true
+    }
+    catch {}
+
+    if (-not $endpointReady) {
+        Write-RoboLog ("Abrindo Chrome controlado localmente na porta CDP " + $port)
+        $arguments = @(
+            "--remote-debugging-port=$port",
+            ("--user-data-dir=" + '"' + $profilePath + '"'),
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--start-maximized",
+            $baseUrl
+        )
+        Start-Process -FilePath $chromePath -ArgumentList $arguments | Out-Null
+    }
+    else {
+        Write-RoboLog "Chrome controlado ja esta em execucao."
+    }
+
+    Wait-CdpEndpoint -Port $port -TimeoutSeconds 30
+    return (Connect-CdpPage -Port $port -UrlContains "pdacloud.com.br")
+}
+
+function Get-PdaPageState {
+    param([System.Net.WebSockets.ClientWebSocket]$Socket)
+
+    $expression = @'
+(() => {
+  const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
+  const hasPassword = !!document.querySelector('input[type="password"]');
+  const hasAuditSelect = [...document.querySelectorAll('select')].some(s =>
+    [...s.options].some(o => norm(o.textContent).includes('centerlar comercio de utilidades'))
+  );
+  const text = norm(document.body ? document.body.innerText : '');
+  return {
+    url: location.href,
+    path: location.pathname,
+    ready: document.readyState,
+    login: hasPassword && text.includes('login'),
+    audit: hasAuditSelect && text.includes('pesquisar')
+  };
+})()
+'@
+    return (Invoke-CdpExpression -Socket $Socket -Expression $expression)
+}
+
+function Invoke-PdaLogin {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        $Config
+    )
+
+    $credential = Get-PdaCredential -Config $Config
+    $userJs = ($credential.Username | ConvertTo-Json -Compress)
+    $passwordJs = ($credential.Password | ConvertTo-Json -Compress)
+
+    $expression = @"
+(() => {
+  const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
+  const visible = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+  const pwd = [...document.querySelectorAll('input[type="password"]')].find(visible);
+  if (!pwd) return {ok:false, reason:'password-not-found'};
+
+  const textInputs = [...document.querySelectorAll('input')].filter(e => visible(e) && ['text','email',''].includes((e.type || '').toLowerCase()));
+  const user = textInputs.find(e => e !== pwd) || document.querySelector('input[type="text"]');
+  if (!user) return {ok:false, reason:'username-not-found'};
+
+  const setValue = (el, value) => {
+    const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLElement.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc && desc.set) desc.set.call(el, value); else el.value = value;
+    el.dispatchEvent(new Event('input', {bubbles:true}));
+    el.dispatchEvent(new Event('change', {bubbles:true}));
+  };
+
+  setValue(user, $userJs);
+  setValue(pwd, $passwordJs);
+
+  const controls = [...document.querySelectorAll('button,input[type="submit"],input[type="button"],a')].filter(visible);
+  const enter = controls.find(e => norm(e.innerText || e.value || e.textContent) === 'entrar');
+  if (!enter) return {ok:false, reason:'enter-not-found'};
+  enter.click();
+  return {ok:true};
+})()
+"@
+
+    $result = Invoke-CdpExpression -Socket $Socket -Expression $expression
+    if (-not $result.ok) {
+        throw ("Nao foi possivel acionar o login PDA: " + [string]$result.reason)
+    }
+
+    Write-RoboLog "Login PDA enviado. Aguardando autenticacao."
+    $deadline = (Get-Date).AddSeconds([int]$Config.pda.pageLoadTimeoutSeconds)
+    do {
+        Start-Sleep -Milliseconds 500
+        $state = Get-PdaPageState -Socket $Socket
+        if (-not [bool]$state.login) {
+            Write-RoboLog ("Login PDA concluido. URL atual: " + [string]$state.url)
+            return
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    throw "Timeout aguardando autenticacao no PDA. Confira usuario e senha."
+}
+
+function Ensure-PdaAuditPage {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        $Config
+    )
+
+    $auditUrl = ([string]$Config.pda.baseUrl).TrimEnd('/') + [string]$Config.pda.auditPath
+    Navigate-Cdp -Socket $Socket -Url $auditUrl -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
+
+    $state = Get-PdaPageState -Socket $Socket
+    if ([bool]$state.login) {
+        Write-RoboLog "Sessao PDA inexistente ou expirada. Refazendo login." "AVISO"
+        Invoke-PdaLogin -Socket $Socket -Config $Config
+        Navigate-Cdp -Socket $Socket -Url $auditUrl -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
+        $state = Get-PdaPageState -Socket $Socket
+    }
+
+    if (-not [bool]$state.audit) {
+        throw ("Tela de Auditoria de Preco nao reconhecida. URL: " + [string]$state.url)
+    }
+
+    Write-RoboLog "Tela de Auditoria de Preco pronta."
+}
+
+function Get-PdaTotals {
+    param([System.Net.WebSockets.ClientWebSocket]$Socket)
+
+    $expression = @'
+(() => {
+  const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
+  const lines = (document.body ? document.body.innerText : '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const labels = ['ok','divergente','sem etiqueta','total'];
+
+  const numberAfter = label => {
+    const target = norm(label);
+    for (let i=0; i<lines.length; i++) {
+      if (norm(lines[i]) !== target) continue;
+      for (let j=i+1; j<Math.min(lines.length, i+5); j++) {
+        const n = norm(lines[j]);
+        if (labels.includes(n)) break;
+        const cleaned = lines[j].replace(/[.\s]/g,'');
+        if (/^\d+$/.test(cleaned)) return parseInt(cleaned,10);
+        if (lines[j] === '...') return null;
+      }
+    }
+    return null;
+  };
+
+  let busy = false;
+  try {
+    if (window.Sys && Sys.WebForms && Sys.WebForms.PageRequestManager) {
+      busy = Sys.WebForms.PageRequestManager.getInstance().get_isInAsyncPostBack();
+    }
+  } catch(e) {}
+
+  return {
+    url: location.href,
+    login: !!document.querySelector('input[type="password"]'),
+    ready: document.readyState,
+    busy,
+    ok: numberAfter('ok'),
+    divergente: numberAfter('divergente'),
+    semEtiqueta: numberAfter('sem etiqueta'),
+    total: numberAfter('total')
+  };
+})()
+'@
+    return (Invoke-CdpExpression -Socket $Socket -Expression $expression)
+}
+
+function Set-PdaAuditFilters {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [string]$Store,
+        [string]$StartDate,
+        [string]$EndDate
+    )
+
+    $storeNumber = 0
+    if ($Store -match '(\d+)') {
+        $storeNumber = [int]$Matches[1]
+    }
+    if ($storeNumber -le 0) {
+        throw "Loja invalida: $Store"
+    }
+
+    $storeJs = ($storeNumber | ConvertTo-Json -Compress)
+    $startJs = ($StartDate | ConvertTo-Json -Compress)
+    $endJs = ($EndDate | ConvertTo-Json -Compress)
+
+    $expression = @"
+(() => {
+  const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
+  const visible = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+  const setValue = (el, value) => {
+    const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype :
+                  el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLElement.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc && desc.set) desc.set.call(el, value); else el.value = value;
+    el.dispatchEvent(new Event('input', {bubbles:true}));
+    el.dispatchEvent(new Event('change', {bubbles:true}));
+  };
+
+  const storeNumber = $storeJs;
+  const selects = [...document.querySelectorAll('select')].filter(visible);
+  const center = selects.find(s => [...s.options].some(o => norm(o.textContent).includes('centerlar comercio de utilidades')));
+  if (!center) return {ok:false, reason:'center-select-not-found'};
+
+  const prefix = storeNumber + '-' + storeNumber;
+  const option = [...center.options].find(o => norm(o.textContent).startsWith(norm(prefix + ' -'))) ||
+                 [...center.options].find(o => norm(o.textContent).startsWith(norm(prefix)));
+  if (!option) return {ok:false, reason:'store-not-found', prefix};
+  setValue(center, option.value);
+
+  const dateInputs = [...document.querySelectorAll('input')].filter(e =>
+    visible(e) && ((e.type || '').toLowerCase() === 'text' || !(e.type)) &&
+    (/^\d{2}\/\d{2}\/\d{4}$/.test((e.value || '').trim()) || /data/i.test((e.id || '') + ' ' + (e.name || '') + ' ' + (e.placeholder || '')))
+  );
+
+  if (dateInputs.length < 2) return {ok:false, reason:'date-inputs-not-found', count:dateInputs.length};
+  setValue(dateInputs[0], $startJs);
+  setValue(dateInputs[1], $endJs);
+
+  const reason = selects.find(s => [...s.options].some(o => norm(o.textContent) === 'todos'));
+  if (reason) {
+    const all = [...reason.options].find(o => norm(o.textContent) === 'todos');
+    if (all) setValue(reason, all.value);
+  }
+
+  return {
+    ok:true,
+    storeText: option.textContent.trim(),
+    startDate: dateInputs[0].value,
+    endDate: dateInputs[1].value,
+    reason: reason ? reason.options[reason.selectedIndex].textContent.trim() : ''
+  };
+})()
+"@
+
+    $result = Invoke-CdpExpression -Socket $Socket -Expression $expression
+    if (-not $result.ok) {
+        throw ("Falha ao preencher filtros PDA: " + ($result | ConvertTo-Json -Compress))
+    }
+
+    Write-RoboLog ("Filtros PDA: {0} | {1} a {2} | Motivo={3}" -f $result.storeText, $result.startDate, $result.endDate, $result.reason)
+    return $result
+}
+
+function Invoke-PdaSearch {
+    param([System.Net.WebSockets.ClientWebSocket]$Socket)
+
+    $expression = @'
+(() => {
+  const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
+  const visible = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+  const controls = [...document.querySelectorAll('button,input[type="button"],input[type="submit"],a')].filter(visible);
+  const search = controls.find(e => norm(e.innerText || e.value || e.textContent) === 'pesquisar');
+  if (!search) return {ok:false, reason:'search-not-found'};
+  window.__roboPrecosSearchAt = Date.now();
+  search.click();
+  return {ok:true, at:window.__roboPrecosSearchAt};
+})()
+'@
+
+    $result = Invoke-CdpExpression -Socket $Socket -Expression $expression
+    if (-not $result.ok) {
+        throw ("Botao Pesquisar nao localizado: " + [string]$result.reason)
+    }
+}
+
+function Wait-PdaTotals {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        $Config
+    )
+
+    $deadline = (Get-Date).AddSeconds([int]$Config.pda.queryTimeoutSeconds)
+    Start-Sleep -Milliseconds 1200
+
+    do {
+        $state = Get-PdaTotals -Socket $Socket
+
+        if ([bool]$state.login) {
+            throw "SESSION_EXPIRED"
+        }
+
+        $hasAll = ($null -ne $state.ok) -and ($null -ne $state.divergente) -and ($null -ne $state.semEtiqueta) -and ($null -ne $state.total)
+        if ($hasAll -and -not [bool]$state.busy) {
+            $sum = [int]$state.ok + [int]$state.divergente + [int]$state.semEtiqueta
+            if ($sum -eq [int]$state.total) {
+                return $state
+            }
+        }
+
+        Start-Sleep -Milliseconds 650
+    } while ((Get-Date) -lt $deadline)
+
+    throw "Timeout aguardando totalizadores validos da auditoria."
+}
+
+function Invoke-PdaAuditQuery {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        $Config,
+        [string]$Store,
+        [string]$StartDate,
+        [string]$EndDate
+    )
+
+    $attempt = 0
+    while ($attempt -lt 2) {
+        $attempt++
+        try {
+            $pageState = Get-PdaPageState -Socket $Socket
+            if ([bool]$pageState.login -or -not [bool]$pageState.audit) {
+                Ensure-PdaAuditPage -Socket $Socket -Config $Config
+            }
+
+            [void](Set-PdaAuditFilters -Socket $Socket -Store $Store -StartDate $StartDate -EndDate $EndDate)
+            Invoke-PdaSearch -Socket $Socket
+            $totals = Wait-PdaTotals -Socket $Socket -Config $Config
+
+            Write-RoboLog ("Resultado {0}: OK={1}; Divergente={2}; SemEtiqueta={3}; Total={4}" -f $Store, $totals.ok, $totals.divergente, $totals.semEtiqueta, $totals.total)
+
+            return [PSCustomObject]@{
+                Loja = ConvertTo-RoboStore $Store
+                DataInicio = $StartDate
+                DataFim = $EndDate
+                Ok = [int]$totals.ok
+                Divergente = [int]$totals.divergente
+                SemEtiqueta = [int]$totals.semEtiqueta
+                Total = [int]$totals.total
+                ColetadoEm = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+            }
+        }
+        catch {
+            if ($_.Exception.Message -eq "SESSION_EXPIRED" -and $attempt -lt 2) {
+                Write-RoboLog "Sessao expirou durante a consulta. Refazendo login e repetindo a loja." "AVISO"
+                Ensure-PdaAuditPage -Socket $Socket -Config $Config
+                continue
+            }
+            throw
+        }
+    }
+}
