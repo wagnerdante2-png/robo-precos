@@ -16,6 +16,7 @@ Set-Location $Root
 . (Join-Path $Root "src\cdp.ps1")
 . (Join-Path $Root "src\pda.ps1")
 . (Join-Path $Root "src\network.ps1")
+. (Join-Path $Root "src\control_workbook.ps1")
 
 $socket = $null
 
@@ -24,7 +25,7 @@ try {
 
     Write-Host "Modo de execucao:" -ForegroundColor Cyan
     Write-Host "  1 - Testar uma unica loja"
-    Write-Host "  2 - Coletar todas as lojas do PDA"
+    Write-Host "  2 - Coletar rede e preencher planilha de controle"
     $mode = Read-Host "Escolha [2]"
     if ([string]::IsNullOrWhiteSpace($mode)) { $mode = "2" }
 
@@ -82,13 +83,16 @@ try {
 
         if ([int]$summary.ErrorCount -gt 0) {
             Write-Host ""
-            Write-Host "A coleta terminou com pendencias." -ForegroundColor Yellow
-            Write-Host "Rode novamente o MESMO periodo: as lojas OK serao preservadas e somente as pendentes serao tentadas." -ForegroundColor Yellow
+            Write-Host ("A coleta do PDA teve {0} centro(s) com erro. A planilha sera validada pela whitelist antes de qualquer gravacao." -f $summary.ErrorCount) -ForegroundColor Yellow
         }
         else {
             Write-Host ""
             Write-Host "Todas as lojas retornadas pelo PDA foram coletadas e validadas." -ForegroundColor Green
         }
+
+        $controlResult = Invoke-RoboPrecosControlWorkbook -Rows @($summary.Rows) -StartDate $startDate -EndDate $endDate
+
+        Write-Host ("Planilha de controle: " + $controlResult.WorkbookPath) -ForegroundColor Cyan
     }
 
     Write-Host ""
