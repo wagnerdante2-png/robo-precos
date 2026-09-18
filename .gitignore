@@ -1,4 +1,6 @@
 config.json
+config.precos.json
 data/lojas.csv
+data/pda_credential.json
 output/
 *.log
