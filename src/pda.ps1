@@ -153,7 +153,7 @@ function Get-PdaPageState {
   };
 })()
 '@
-    return (Invoke-CdpExpression -Socket $Socket -Expression $expression)
+    return (Invoke-CdpJsonExpression -Socket $Socket -Expression $expression)
 }
 
 function Wait-PdaRecognizedPage {
@@ -231,7 +231,7 @@ function Invoke-PdaLogin {
 })()
 "@
 
-    $result = Invoke-CdpExpression -Socket $Socket -Expression $expression
+    $result = Invoke-CdpJsonExpression -Socket $Socket -Expression $expression
     if (-not $result.ok) {
         throw ("Nao foi possivel acionar o login PDA: " + [string]$result.reason)
     }
@@ -322,7 +322,7 @@ function Get-PdaTotals {
   };
 })()
 '@
-    return (Invoke-CdpExpression -Socket $Socket -Expression $expression)
+    return (Invoke-CdpJsonExpression -Socket $Socket -Expression $expression)
 }
 
 function Set-PdaAuditFilters {
@@ -394,7 +394,7 @@ function Set-PdaAuditFilters {
 })()
 "@
 
-    $result = Invoke-CdpExpression -Socket $Socket -Expression $expression
+    $result = Invoke-CdpJsonExpression -Socket $Socket -Expression $expression
     if (-not $result.ok) {
         throw ("Falha ao preencher filtros PDA: " + ($result | ConvertTo-Json -Compress))
     }
@@ -419,7 +419,7 @@ function Invoke-PdaSearch {
 })()
 '@
 
-    $result = Invoke-CdpExpression -Socket $Socket -Expression $expression
+    $result = Invoke-CdpJsonExpression -Socket $Socket -Expression $expression
     if (-not $result.ok) {
         throw ("Botao Pesquisar nao localizado: " + [string]$result.reason)
     }
