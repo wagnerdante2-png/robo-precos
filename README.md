@@ -2,16 +2,31 @@
 
 RPA local para coleta dos totalizadores de Auditoria de Precos no sistema PDA.
 
-## Objetivo atual
+## Estado atual - v0.2
 
-O prototipo v0.1 consulta uma unica loja e le diretamente da tela do PDA:
+O nucleo de leitura direta do PDA foi validado em ambiente real.
 
-- OK
-- Divergente
-- Sem etiqueta
-- Total auditado
+O robo consegue:
 
-Nesta etapa ainda nao altera a planilha de controle. Primeiro validamos a coleta diretamente no PDA.
+- abrir o Chrome controlado localmente;
+- autenticar no PDA;
+- abrir diretamente a tela de Auditoria de Preco;
+- selecionar loja e periodo;
+- pesquisar;
+- ler diretamente da pagina:
+  - OK;
+  - Divergente;
+  - Sem etiqueta;
+  - Total auditado;
+- validar que OK + Divergente + Sem etiqueta = Total;
+- descobrir automaticamente as lojas existentes no dropdown Centro;
+- percorrer a rede inteira;
+- salvar checkpoint apos cada loja;
+- retomar uma coleta interrompida;
+- refazer login automaticamente se a sessao expirar;
+- gerar CSV consolidado da rede.
+
+Nesta etapa o robo ainda nao altera a planilha de controle. A escrita nas abas ETIQUETAS, DIVERGENCIAS e SEM PRECO sera conectada depois da validacao da coleta em massa.
 
 ## Premissas
 
@@ -24,46 +39,64 @@ Nesta etapa ainda nao altera a planilha de controle. Primeiro validamos a coleta
 - sem GitHub Actions
 - execucao local
 
-## Como o prototipo funciona
+## Execucao
 
-1. Execute `RoboPrecos.cmd`.
-2. Informe loja, data inicial e data final.
-3. Na primeira execucao, informe usuario e senha do PDA.
-4. A senha e protegida localmente pelo Windows via DPAPI e nao e enviada ao GitHub.
-5. O robo abre uma instancia controlada do Chrome.
-6. Acessa diretamente a tela de Auditoria de Preco.
-7. Se a sessao estiver expirada, refaz o login.
-8. Seleciona loja e periodo.
-9. Aciona Pesquisar.
-10. Le os quatro totalizadores diretamente do DOM da pagina.
-11. Valida que OK + Divergente + Sem etiqueta = Total.
-12. Salva o resultado de teste em `output/`.
+Execute:
 
-## Arquivos novos
+RoboPrecos.cmd
 
-- `RoboPrecos.cmd`
-- `RoboPrecos.ps1`
-- `config.precos.example.json`
-- `src/cdp.ps1`
-- `src/pda.ps1`
+O menu oferece:
 
-A base herdada do `robo-horas` foi preservada para reaproveitamento, mas o novo fluxo usa somente os modulos necessarios.
+1. Testar uma unica loja
+2. Coletar todas as lojas retornadas pelo PDA
+
+No modo rede inteira o robo nao usa uma lista fixa de lojas. Ele le diretamente as opcoes atuais do campo Centro do sistema PDA.
+
+## Checkpoint e retomada
+
+A cada loja concluida o resultado e salvo em:
+
+output/checkpoints/
+
+Se ocorrer queda, timeout, fechamento ou erro em alguma loja, execute novamente o mesmo periodo.
+
+As lojas ja registradas como OK e matematicamente validadas sao preservadas. O robo tenta novamente somente as lojas pendentes ou com erro.
+
+O consolidado fica em:
+
+output/auditoria_rede_YYYYMMDD_YYYYMMDD.csv
+
+## Sessao expirada
+
+Se o PDA retornar para o login durante a coleta, o robo usa a credencial local protegida pelo Windows, refaz a autenticacao, reabre a Auditoria de Preco e repete a loja que estava em processamento.
 
 ## Seguranca local
 
 Os arquivos abaixo ficam fora do Git:
 
-- `config.precos.json`
-- `data/pda_credential.json`
-- `output/`
+- config.precos.json
+- data/pda_credential.json
+- output/
 
-A credencial PDA nao deve ser adicionada manualmente ao repositorio.
+A credencial PDA e protegida localmente pelo Windows via DPAPI e nao deve ser adicionada manualmente ao repositorio.
 
-## Proximas etapas apos validar o prototipo
+## Arquitetura
 
-1. percorrer todas as lojas;
-2. checkpoint por loja;
-3. retomada automatica apos timeout ou falha;
-4. consolidacao da coleta;
-5. preenchimento das abas ETIQUETAS, DIVERGENCIAS e SEM PRECO na planilha existente;
-6. integrar posteriormente os dados de descontos vindos do BI.
+RoboPrecos.cmd
+  -> RoboPrecos.ps1
+      -> src/bootstrap.ps1
+      -> src/cdp.ps1
+      -> src/pda.ps1
+      -> src/network.ps1
+
+A base herdada do robo-horas permanece no repositorio para reaproveitamento, mas o fluxo do RoboPrecos usa somente os modulos necessarios.
+
+## Proximas etapas
+
+1. validar a coleta de varias lojas / rede inteira;
+2. mapear de forma exata as linhas e colunas da planilha Controle de Auditoria de Precos;
+3. escrever Total na aba ETIQUETAS;
+4. escrever Divergente na aba DIVERGENCIAS;
+5. escrever Sem etiqueta na aba SEM PRECO;
+6. preservar formulas, formatacao e historico existentes;
+7. integrar posteriormente os dados de descontos vindos do BI.
