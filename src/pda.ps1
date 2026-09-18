@@ -294,7 +294,7 @@ function Invoke-PdaLogin {
     throw "Timeout aguardando autenticacao no PDA. Confira usuario e senha."
 }
 
-function Ensure-PdaAuditPage {function Ensure-PdaAuditPage {
+function Ensure-PdaAuditPage {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
         $Config
