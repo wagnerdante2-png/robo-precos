@@ -207,58 +207,15 @@ function Navigate-Cdp {
 
     [void](Invoke-CdpCommand -Socket $Socket -Method "Page.enable")
     [void](Invoke-CdpCommand -Socket $Socket -Method "Runtime.enable")
-    [void](Invoke-CdpCommand -Socket $Socket -Method "Page.navigate" -Params @{ url = $Url })
 
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    $lastState = $null
-
-    do {
-        Start-Sleep -Milliseconds 350
-
-        try {
-            $lastState = Invoke-CdpExpression -Socket $Socket -Expression @'
-(() => {
-  const text = (document.body ? document.body.innerText : '') || '';
-  const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
-  const hasPassword = !!document.querySelector('input[type="password"]');
-  const hasCenterSelect = [...document.querySelectorAll('select')].some(s =>
-    [...s.options].some(o => norm(o.textContent).includes('centerlar comercio de utilidades'))
-  );
-  const hasSearch = [...document.querySelectorAll('button,input[type="button"],input[type="submit"],a')]
-    .some(e => norm(e.innerText || e.value || e.textContent) === 'pesquisar');
-
-  return {
-    ready: document.readyState,
-    url: location.href,
-    bodyLength: text.length,
-    login: hasPassword,
-    audit: hasCenterSelect && hasSearch
-  };
-})()
-'@
-
-            # O PDA pode manter requisicoes pendentes por bastante tempo.
-            # Nao exigimos readyState=complete: basta a tela estar utilizavel.
-            if ($lastState) {
-                if ([bool]$lastState.login -or [bool]$lastState.audit) {
-                    return
-                }
-
-                if (($lastState.ready -eq "interactive" -or $lastState.ready -eq "complete") -and [int]$lastState.bodyLength -gt 20) {
-                    return
-                }
-            }
-        }
-        catch {
-            # Durante redirect/login o contexto JavaScript pode ser destruido por alguns milissegundos.
-        }
-    } while ((Get-Date) -lt $deadline)
-
-    if ($lastState) {
-        throw ("Timeout aguardando pagina utilizavel. URL atual: {0} | readyState={1} | bodyLength={2}" -f $lastState.url, $lastState.ready, $lastState.bodyLength)
+    $result = Invoke-CdpCommand -Socket $Socket -Method "Page.navigate" -Params @{ url = $Url }
+    if ($result -and ($result.PSObject.Properties.Name -contains "errorText") -and -not [string]::IsNullOrWhiteSpace([string]$result.errorText)) {
+        throw ("Chrome nao conseguiu navegar para " + $Url + ": " + [string]$result.errorText)
     }
 
-    throw "Timeout aguardando pagina utilizavel: $Url"
+    # O PDA pode nunca chegar a readyState=complete por manter requisicoes pendentes.
+    # A validacao da tela e feita depois, por elementos reais da pagina.
+    Start-Sleep -Milliseconds 1200
 }
 
 function Close-CdpPage {
