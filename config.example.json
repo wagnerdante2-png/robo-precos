@@ -1,0 +1,48 @@
+{
+  "bi": {
+    "url": "https://app.powerbi.com/",
+    "exportWaitSeconds": 900
+  },
+  "excel": {
+    "worksheet": "",
+    "storeColumn": "Loja"
+  },
+  "message": {
+    "title": "PARCIAL OPERACIONAL | {loja}",
+    "fields": [],
+    "maxAutoFields": 10,
+    "includeRecordCount": true,
+    "footer": ""
+  },
+  "whatsapp": {
+    "dryRun": true,
+    "testMode": true,
+    "testStore": "ML01",
+    "testPhone": "",
+    "testRecipients": [
+      {"name": "Teste 1", "phone": "", "enabled": true},
+      {"name": "Teste 2", "phone": "", "enabled": true},
+      {"name": "Teste 3", "phone": "", "enabled": true}
+    ],
+    "useExistingChromeSession": true,
+    "useUiAutomationSend": true,
+    "sendButtonNames": ["Enviar", "Send"],
+    "sendButtonTimeoutSeconds": 25,
+    "waitSeconds": 12,
+    "delayBetweenMessagesSeconds": 4,
+    "continueOnSendError": true,
+    "sendRetryCount": 1,
+    "sendRetryDelaySeconds": 3,
+    "pauseOnFinish": true
+  },
+  "schedule": {
+    "enabled": false,
+    "time": "07:00",
+    "days": ["MON", "TUE", "WED", "THU", "FRI", "SAT"],
+    "runMissedAsSoonAsPossible": true,
+    "preventDuplicateSameDay": true,
+    "retryFailedStores": true,
+    "requireNetwork": true,
+    "lateRunPolicy": "same_day_any_time"
+  }
+}

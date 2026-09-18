@@ -1,0 +1,9 @@
+RoboHoras Portable v0.9
+Build: 2026-09-17
+Teste sequencial com ate 3 destinatarios
+Opcao de envio para TODOS os destinatarios de teste
+Retry individual e continuidade em caso de falha
+Resumo CSV por lote de disparo
+Envio automatico via UI Automation do Windows
+Configuracao futura de agendamento preparada e desativada
+Sem instalacao | Sem Python | Sem GitHub Actions

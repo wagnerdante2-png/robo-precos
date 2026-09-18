@@ -1,0 +1,4 @@
+loja;nome;telefone;ativo;mensagem
+ML01;Teste 1;;sim;"Bom dia {nome}! Seguem os dados da {loja}:\n\n{dados_bi}"
+ML01;Teste 2;;sim;"Ola {nome}! Parcial de {data} as {hora}.\n\n{dados_bi}"
+ML01;Teste 3;;sim;"Bom dia {nome}! Mensagem automatica da {loja}.\n\n{dados_bi}"
