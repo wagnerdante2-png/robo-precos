@@ -1,7 +1,7 @@
 Write-Host ""
 Write-Host "===================================================" -ForegroundColor Cyan
-Write-Host " ROBO PRECOS - PROTOTIPO PDA v0.1" -ForegroundColor Cyan
-Write-Host " LEITURA DIRETA DOS TOTALIZADORES DE AUDITORIA" -ForegroundColor Cyan
+Write-Host " ROBO PRECOS - COLETA PDA v0.2" -ForegroundColor Cyan
+Write-Host " AUDITORIA DE PRECOS | LOJA UNICA OU REDE INTEIRA" -ForegroundColor Cyan
 Write-Host " SEM INSTALACAO | SEM SELENIUM | SEM ACTIONS" -ForegroundColor Cyan
 Write-Host "===================================================" -ForegroundColor Cyan
 Write-Host ""
@@ -15,25 +15,30 @@ Set-Location $Root
 . (Join-Path $Root "src\bootstrap.ps1")
 . (Join-Path $Root "src\cdp.ps1")
 . (Join-Path $Root "src\pda.ps1")
+. (Join-Path $Root "src\network.ps1")
 
 $socket = $null
 
 try {
     $config = Get-RoboPrecosConfig
 
-    $store = [string]$config.test.store
-    $startDate = [string]$config.test.startDate
-    $endDate = [string]$config.test.endDate
+    Write-Host "Modo de execucao:" -ForegroundColor Cyan
+    Write-Host "  1 - Testar uma unica loja"
+    Write-Host "  2 - Coletar todas as lojas do PDA"
+    $mode = Read-Host "Escolha [2]"
+    if ([string]::IsNullOrWhiteSpace($mode)) { $mode = "2" }
 
-    if ([string]::IsNullOrWhiteSpace($store)) {
+    if ($mode -notin @("1","2")) {
+        throw "Modo invalido. Use 1 ou 2."
+    }
+
+    $store = ""
+    if ($mode -eq "1") {
         $store = Read-Host "Loja para teste (ex.: 5 ou ML05)"
     }
-    if ([string]::IsNullOrWhiteSpace($startDate)) {
-        $startDate = Read-Host "Data inicial (dd/mm/aaaa)"
-    }
-    if ([string]::IsNullOrWhiteSpace($endDate)) {
-        $endDate = Read-Host "Data final (dd/mm/aaaa)"
-    }
+
+    $startDate = Read-Host "Data inicial (dd/mm/aaaa)"
+    $endDate = Read-Host "Data final (dd/mm/aaaa)"
 
     if ($startDate -notmatch '^\d{2}/\d{2}/\d{4}$') {
         throw "Data inicial invalida. Use dd/mm/aaaa."
@@ -42,28 +47,46 @@ try {
         throw "Data final invalida. Use dd/mm/aaaa."
     }
 
+    [void](ConvertTo-RoboPrecosDateKey $startDate)
+    [void](ConvertTo-RoboPrecosDateKey $endDate)
+
     $socket = Start-RoboPrecosBrowser -Config $config
     Ensure-PdaAuditPage -Socket $socket -Config $config
 
-    Write-Host ""
-    Write-Host ("Consultando {0} de {1} a {2}..." -f $store, $startDate, $endDate) -ForegroundColor Yellow
+    if ($mode -eq "1") {
+        Write-Host ""
+        Write-Host ("Consultando {0} de {1} a {2}..." -f $store, $startDate, $endDate) -ForegroundColor Yellow
 
-    $result = Invoke-PdaAuditQuery -Socket $socket -Config $config -Store $store -StartDate $startDate -EndDate $endDate
+        $result = Invoke-PdaAuditQuery -Socket $socket -Config $config -Store $store -StartDate $startDate -EndDate $endDate
 
-    Write-Host ""
-    Write-Host "RESULTADO VALIDADO" -ForegroundColor Green
-    Write-Host ("Loja          : {0}" -f $result.Loja)
-    Write-Host ("OK            : {0}" -f $result.Ok)
-    Write-Host ("Divergente    : {0}" -f $result.Divergente)
-    Write-Host ("Sem etiqueta  : {0}" -f $result.SemEtiqueta)
-    Write-Host ("Total auditado: {0}" -f $result.Total)
-    Write-Host ""
+        Write-Host ""
+        Write-Host "RESULTADO VALIDADO" -ForegroundColor Green
+        Write-Host ("Loja          : {0}" -f $result.Loja)
+        Write-Host ("OK            : {0}" -f $result.Ok)
+        Write-Host ("Divergente    : {0}" -f $result.Divergente)
+        Write-Host ("Sem etiqueta  : {0}" -f $result.SemEtiqueta)
+        Write-Host ("Total auditado: {0}" -f $result.Total)
+        Write-Host ""
 
-    $testOutput = Join-Path $OutputPath ("teste_pda_{0}_{1}.csv" -f $result.Loja, (Get-Date -Format "yyyyMMdd_HHmmss"))
-    @($result) | Export-Csv -LiteralPath $testOutput -NoTypeInformation -Encoding UTF8
-    Write-RoboLog ("Teste concluido e salvo em " + $testOutput)
+        $testOutput = Join-Path $OutputPath ("teste_pda_{0}_{1}.csv" -f $result.Loja, (Get-Date -Format "yyyyMMdd_HHmmss"))
+        @($result) | Export-Csv -LiteralPath $testOutput -NoTypeInformation -Encoding UTF8
+        Write-RoboLog ("Teste concluido e salvo em " + $testOutput)
+        Write-Host ("Arquivo de teste: {0}" -f $testOutput) -ForegroundColor Cyan
+    }
+    else {
+        $summary = Invoke-RoboPrecosNetworkCollection -Socket $socket -Config $config -StartDate $startDate -EndDate $endDate -RetryPerStore 3
 
-    Write-Host ("Arquivo de teste: {0}" -f $testOutput) -ForegroundColor Cyan
+        if ([int]$summary.ErrorCount -gt 0) {
+            Write-Host ""
+            Write-Host "A coleta terminou com pendencias." -ForegroundColor Yellow
+            Write-Host "Rode novamente o MESMO periodo: as lojas OK serao preservadas e somente as pendentes serao tentadas." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host ""
+            Write-Host "Todas as lojas retornadas pelo PDA foram coletadas e validadas." -ForegroundColor Green
+        }
+    }
+
     Write-Host ""
     Read-Host "Pressione ENTER para fechar"
 }
