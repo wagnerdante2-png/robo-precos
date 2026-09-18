@@ -10,7 +10,7 @@ function Wait-CdpEndpoint {
     do {
         try {
             $version = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/json/version" -f $Port) -UseBasicParsing -TimeoutSec 2
-            if ($version) { return $true }
+            if ($version) { return }
         }
         catch {}
         Start-Sleep -Milliseconds 500
