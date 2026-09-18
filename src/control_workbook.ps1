@@ -57,7 +57,10 @@ function Assert-RoboPrecosWorkbookUnlocked {
 }
 
 function New-RoboPrecosWorkbookBackup {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        $Workbook
+    )
 
     $downloads = Split-Path -Parent $Path
     $backupDirectory = Join-Path $downloads "RoboPrecos_Backups"
@@ -68,7 +71,13 @@ function New-RoboPrecosWorkbookBackup {
     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $backupPath = Join-Path $backupDirectory ($base + "_" + $timestamp + $extension)
 
-    Copy-Item -LiteralPath $Path -Destination $backupPath -Force
+    if ($Workbook) {
+        $Workbook.SaveCopyAs($backupPath)
+    }
+    else {
+        Copy-Item -LiteralPath $Path -Destination $backupPath -Force
+    }
+
     Write-RoboLog ("Backup da planilha criado: " + $backupPath)
 
     return $backupPath
@@ -289,7 +298,7 @@ function Invoke-RoboPrecosControlWorkbook {
             Write-RoboLog ("Centros coletados no PDA e ignorados por nao existirem na coluna B da planilha: " + ($ignored -join ", "))
         }
 
-        $backupPath = New-RoboPrecosWorkbookBackup -Path $workbookPath
+        $backupPath = New-RoboPrecosWorkbookBackup -Path $workbookPath -Workbook $workbook
 
         $written = 0
 
