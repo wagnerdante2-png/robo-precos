@@ -217,6 +217,27 @@ function Invoke-CdpExpression {
     return $null
 }
 
+function Invoke-CdpJsonExpression {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [Parameter(Mandatory = $true)][string]$Expression
+    )
+
+    $wrapped = "JSON.stringify(" + $Expression + ")"
+    $json = Invoke-CdpExpression -Socket $Socket -Expression $wrapped
+
+    if ([string]::IsNullOrWhiteSpace([string]$json)) {
+        return $null
+    }
+
+    try {
+        return ([string]$json | ConvertFrom-Json)
+    }
+    catch {
+        throw ("Chrome retornou JSON invalido ao ler a pagina: " + [string]$json)
+    }
+}
+
 function Navigate-Cdp {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
