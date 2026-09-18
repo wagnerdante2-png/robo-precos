@@ -187,12 +187,31 @@ function Invoke-CdpExpression {
         userGesture = $true
     }
 
-    if ($result.exceptionDetails) {
-        throw ("Erro JavaScript no navegador: " + ($result.exceptionDetails | ConvertTo-Json -Depth 8 -Compress))
+    if ($null -eq $result) {
+        return $null
     }
 
-    if ($result.result -and ($result.result.PSObject.Properties.Name -contains "value")) {
-        return $result.result.value
+    $propertyNames = @($result.PSObject.Properties.Name)
+
+    if ($propertyNames -contains "exceptionDetails") {
+        $exceptionDetails = $result.exceptionDetails
+        if ($exceptionDetails) {
+            throw ("Erro JavaScript no navegador: " + ($exceptionDetails | ConvertTo-Json -Depth 8 -Compress))
+        }
+    }
+
+    if ($propertyNames -contains "result") {
+        $remoteResult = $result.result
+        if ($remoteResult) {
+            $remoteProperties = @($remoteResult.PSObject.Properties.Name)
+            if ($remoteProperties -contains "value") {
+                return $remoteResult.value
+            }
+
+            if ($remoteProperties -contains "description" -and -not [string]::IsNullOrWhiteSpace([string]$remoteResult.description)) {
+                return [string]$remoteResult.description
+            }
+        }
     }
 
     return $null
