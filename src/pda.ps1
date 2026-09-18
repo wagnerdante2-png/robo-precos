@@ -107,7 +107,7 @@ function Start-RoboPrecosBrowser {
             "--no-default-browser-check",
             "--new-window",
             "--start-maximized",
-            $baseUrl
+            "about:blank"
         )
         Start-Process -FilePath $chromePath -ArgumentList $arguments | Out-Null
     }
@@ -117,17 +117,38 @@ function Start-RoboPrecosBrowser {
 
     Wait-CdpEndpoint -Port $port -TimeoutSeconds 30
 
-    # Funcoes PowerShell podem devolver mais de um item pelo pipeline.
-    # Filtramos explicitamente apenas o ClientWebSocket para impedir
-    # que qualquer saida auxiliar transforme o socket em System.Object[].
-    $connectionOutput = @(Connect-CdpPage -Port $port -UrlContains "pdacloud.com.br")
-    $socket = @($connectionOutput | Where-Object { $_ -is [System.Net.WebSockets.ClientWebSocket] }) | Select-Object -First 1
+    # Cria UMA aba dedicada para o PDA e conecta exatamente nela.
+    # Nao usa mais o primeiro target do Chrome e nunca conecta em extensoes/background.
+    $target = New-CdpPageTarget -Port $port -Url $baseUrl
+    Write-RoboLog ("Aba PDA dedicada criada: " + [string]$target.url)
 
-    if (-not $socket) {
-        $types = @($connectionOutput | ForEach-Object {
-            if ($null -eq $_) { "<null>" } else { $_.GetType().FullName }
-        }) -join ", "
-        throw ("Chrome DevTools conectou, mas nenhum ClientWebSocket valido foi retornado. Saidas recebidas: " + $types)
+    $wsUrl = [string]$target.webSocketDebuggerUrl
+    $wsUrl = $wsUrl -replace 'ws://localhost:', 'ws://127.0.0.1:'
+    $wsUrl = $wsUrl -replace 'ws://\[::1\]:', 'ws://127.0.0.1:'
+
+    Write-Host ("Conectando ao Chrome local: " + $wsUrl) -ForegroundColor DarkGray
+
+    $socket = New-Object System.Net.WebSockets.ClientWebSocket
+    try {
+        $socket.Options.Proxy = New-Object System.Net.WebProxy
+    }
+    catch {
+        try { $socket.Options.Proxy = $null } catch {}
+    }
+
+    $uri = New-Object System.Uri($wsUrl)
+    try {
+        [void]$socket.ConnectAsync($uri, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+    }
+    catch {
+        $detail = $_.Exception.Message
+        $inner = $_.Exception.InnerException
+        while ($inner) {
+            $detail += " -> " + $inner.Message
+            $inner = $inner.InnerException
+        }
+        try { $socket.Dispose() } catch {}
+        throw ("Falha na conexao com a aba PDA dedicada. Detalhe: " + $detail)
     }
 
     $probe = Invoke-CdpExpression -Socket $socket -Expression "'ROBO_CDP_OK'"
