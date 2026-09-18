@@ -40,6 +40,29 @@ function Get-CdpPageTarget {
     return $target
 }
 
+function New-CdpPageTarget {
+    param(
+        [int]$Port,
+        [Parameter(Mandatory = $true)][string]$Url
+    )
+
+    $encoded = [Uri]::EscapeDataString($Url)
+    $endpoint = "http://127.0.0.1:{0}/json/new?{1}" -f $Port, $encoded
+
+    try {
+        $target = Invoke-RestMethod -Method Put -Uri $endpoint -UseBasicParsing -TimeoutSec 10
+    }
+    catch {
+        throw ("Nao foi possivel criar uma aba dedicada do PDA no Chrome DevTools. Detalhe: " + $_.Exception.Message)
+    }
+
+    if (-not $target -or [string]::IsNullOrWhiteSpace([string]$target.webSocketDebuggerUrl)) {
+        throw "Chrome DevTools criou a aba, mas nao retornou webSocketDebuggerUrl."
+    }
+
+    return $target
+}
+
 function Connect-CdpPage {
     param(
         [int]$Port,
