@@ -210,16 +210,55 @@ function Navigate-Cdp {
     [void](Invoke-CdpCommand -Socket $Socket -Method "Page.navigate" -Params @{ url = $Url })
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastState = $null
+
     do {
-        Start-Sleep -Milliseconds 300
+        Start-Sleep -Milliseconds 350
+
         try {
-            $state = Invoke-CdpExpression -Socket $Socket -Expression "document.readyState"
-            if ($state -eq "complete") { return }
+            $lastState = Invoke-CdpExpression -Socket $Socket -Expression @'
+(() => {
+  const text = (document.body ? document.body.innerText : '') || '';
+  const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
+  const hasPassword = !!document.querySelector('input[type="password"]');
+  const hasCenterSelect = [...document.querySelectorAll('select')].some(s =>
+    [...s.options].some(o => norm(o.textContent).includes('centerlar comercio de utilidades'))
+  );
+  const hasSearch = [...document.querySelectorAll('button,input[type="button"],input[type="submit"],a')]
+    .some(e => norm(e.innerText || e.value || e.textContent) === 'pesquisar');
+
+  return {
+    ready: document.readyState,
+    url: location.href,
+    bodyLength: text.length,
+    login: hasPassword,
+    audit: hasCenterSelect && hasSearch
+  };
+})()
+'@
+
+            # O PDA pode manter requisicoes pendentes por bastante tempo.
+            # Nao exigimos readyState=complete: basta a tela estar utilizavel.
+            if ($lastState) {
+                if ([bool]$lastState.login -or [bool]$lastState.audit) {
+                    return
+                }
+
+                if (($lastState.ready -eq "interactive" -or $lastState.ready -eq "complete") -and [int]$lastState.bodyLength -gt 20) {
+                    return
+                }
+            }
         }
-        catch {}
+        catch {
+            # Durante redirect/login o contexto JavaScript pode ser destruido por alguns milissegundos.
+        }
     } while ((Get-Date) -lt $deadline)
 
-    throw "Timeout aguardando carregamento da pagina: $Url"
+    if ($lastState) {
+        throw ("Timeout aguardando pagina utilizavel. URL atual: {0} | readyState={1} | bodyLength={2}" -f $lastState.url, $lastState.ready, $lastState.bodyLength)
+    }
+
+    throw "Timeout aguardando pagina utilizavel: $Url"
 }
 
 function Close-CdpPage {
