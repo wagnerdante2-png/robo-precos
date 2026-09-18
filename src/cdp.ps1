@@ -65,7 +65,7 @@ function Receive-CdpMessage {
 
     try {
         do {
-            $segment = New-Object System.ArraySegment[byte] -ArgumentList (, $buffer)
+            $segment = [System.ArraySegment[byte]]::new($buffer)
             $result = $Socket.ReceiveAsync($segment, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
 
             if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
@@ -100,7 +100,7 @@ function Invoke-CdpCommand {
     } | ConvertTo-Json -Depth 20 -Compress
 
     $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
-    $segment = New-Object System.ArraySegment[byte] -ArgumentList (, $bytes)
+    $segment = [System.ArraySegment[byte]]::new($bytes)
     $Socket.SendAsync(
         $segment,
         [System.Net.WebSockets.WebSocketMessageType]::Text,
