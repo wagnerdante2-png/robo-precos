@@ -138,22 +138,62 @@ function Get-PdaPageState {
 
     $expression = @'
 (() => {
-  const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
-  const hasPassword = !!document.querySelector('input[type="password"]');
-  const hasAuditSelect = [...document.querySelectorAll('select')].some(s =>
-    [...s.options].some(o => norm(o.textContent).includes('centerlar comercio de utilidades'))
-  );
-  const text = norm(document.body ? document.body.innerText : '');
-  return {
-    url: location.href,
-    path: location.pathname,
-    ready: document.readyState,
-    login: hasPassword && text.includes('login'),
-    audit: hasAuditSelect && text.includes('pesquisar')
-  };
+  try {
+    const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
+    const bodyText = document.body ? document.body.innerText : '';
+    const text = norm(bodyText);
+    const hasPassword = document.querySelectorAll('input[type="password"]').length > 0;
+    const hasLoginWord = text.includes('login') || text.includes('usuario') || text.includes('usuário');
+    const hasAuditSelect = [...document.querySelectorAll('select')].some(s =>
+      [...s.options].some(o => norm(o.textContent).includes('centerlar comercio de utilidades'))
+    );
+    const hasSearch = [...document.querySelectorAll('button,input[type="button"],input[type="submit"],a')].some(e =>
+      norm(e.innerText || e.value || e.textContent) === 'pesquisar'
+    );
+
+    let kind = 'OTHER';
+    if (hasPassword || hasLoginWord) kind = 'LOGIN';
+    if (hasAuditSelect && hasSearch) kind = 'AUDIT';
+
+    const safe = v => String(v == null ? '' : v).replace(/[|\r\n]+/g,' ').slice(0,180);
+    return [
+      kind,
+      safe(location.href),
+      safe(document.readyState),
+      document.querySelectorAll('input').length,
+      document.querySelectorAll('select').length,
+      document.querySelectorAll('iframe').length,
+      safe(document.title),
+      safe(bodyText)
+    ].join('|');
+  } catch (e) {
+    return 'ERROR|' + String(e && e.message ? e.message : e);
+  }
 })()
 '@
-    return (Invoke-CdpJsonExpression -Socket $Socket -Expression $expression)
+
+    $raw = [string](Invoke-CdpExpression -Socket $Socket -Expression $expression)
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return [PSCustomObject]@{ kind="EMPTY"; url=""; ready=""; inputCount=0; selectCount=0; iframeCount=0; title=""; snippet=""; login=$false; audit=$false }
+    }
+
+    $parts = $raw.Split('|', 8)
+    if ($parts[0] -eq "ERROR") {
+        throw ("Erro lendo pagina PDA: " + (($parts | Select-Object -Skip 1) -join "|"))
+    }
+
+    return [PSCustomObject]@{
+        kind = $parts[0]
+        url = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+        ready = if ($parts.Count -gt 2) { $parts[2] } else { "" }
+        inputCount = if ($parts.Count -gt 3) { [int]$parts[3] } else { 0 }
+        selectCount = if ($parts.Count -gt 4) { [int]$parts[4] } else { 0 }
+        iframeCount = if ($parts.Count -gt 5) { [int]$parts[5] } else { 0 }
+        title = if ($parts.Count -gt 6) { $parts[6] } else { "" }
+        snippet = if ($parts.Count -gt 7) { $parts[7] } else { "" }
+        login = ($parts[0] -eq "LOGIN")
+        audit = ($parts[0] -eq "AUDIT")
+    }
 }
 
 function Wait-PdaRecognizedPage {
@@ -176,12 +216,12 @@ function Wait-PdaRecognizedPage {
         catch {
             $lastError = $_.Exception.Message
         }
-
         Start-Sleep -Milliseconds 500
     } while ((Get-Date) -lt $deadline)
 
     if ($lastState) {
-        throw ("PDA abriu uma pagina nao reconhecida. URL={0} | ready={1} | login={2} | audit={3}" -f $lastState.url, $lastState.ready, $lastState.login, $lastState.audit)
+        $diag = "kind={0} | URL={1} | ready={2} | inputs={3} | selects={4} | iframes={5} | titulo={6} | trecho={7}" -f $lastState.kind,$lastState.url,$lastState.ready,$lastState.inputCount,$lastState.selectCount,$lastState.iframeCount,$lastState.title,$lastState.snippet
+        throw ("PDA nao apresentou tela reconhecida. " + $diag)
     }
 
     if (-not [string]::IsNullOrWhiteSpace($lastError)) {
@@ -203,37 +243,41 @@ function Invoke-PdaLogin {
 
     $expression = @"
 (() => {
-  const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
-  const visible = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
-  const pwd = [...document.querySelectorAll('input[type="password"]')].find(visible);
-  if (!pwd) return {ok:false, reason:'password-not-found'};
+  try {
+    const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
+    const visible = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+    const pwd = [...document.querySelectorAll('input[type="password"]')].find(visible);
+    if (!pwd) return 'ERROR:password-not-found';
 
-  const textInputs = [...document.querySelectorAll('input')].filter(e => visible(e) && ['text','email',''].includes((e.type || '').toLowerCase()));
-  const user = textInputs.find(e => e !== pwd) || document.querySelector('input[type="text"]');
-  if (!user) return {ok:false, reason:'username-not-found'};
+    const inputs = [...document.querySelectorAll('input')].filter(visible);
+    const user = inputs.find(e => e !== pwd && ['text','email',''].includes((e.type || '').toLowerCase()));
+    if (!user) return 'ERROR:username-not-found';
 
-  const setValue = (el, value) => {
-    const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLElement.prototype;
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (desc && desc.set) desc.set.call(el, value); else el.value = value;
-    el.dispatchEvent(new Event('input', {bubbles:true}));
-    el.dispatchEvent(new Event('change', {bubbles:true}));
-  };
+    const setValue = (el, value) => {
+      const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (desc && desc.set) desc.set.call(el, value); else el.value = value;
+      el.dispatchEvent(new Event('input', {bubbles:true}));
+      el.dispatchEvent(new Event('change', {bubbles:true}));
+    };
 
-  setValue(user, $userJs);
-  setValue(pwd, $passwordJs);
+    setValue(user, $userJs);
+    setValue(pwd, $passwordJs);
 
-  const controls = [...document.querySelectorAll('button,input[type="submit"],input[type="button"],a')].filter(visible);
-  const enter = controls.find(e => norm(e.innerText || e.value || e.textContent) === 'entrar');
-  if (!enter) return {ok:false, reason:'enter-not-found'};
-  enter.click();
-  return {ok:true};
+    const controls = [...document.querySelectorAll('button,input[type="submit"],input[type="button"],a')].filter(visible);
+    const enter = controls.find(e => norm(e.innerText || e.value || e.textContent) === 'entrar');
+    if (!enter) return 'ERROR:enter-not-found';
+    enter.click();
+    return 'OK';
+  } catch (e) {
+    return 'ERROR:' + String(e && e.message ? e.message : e);
+  }
 })()
 "@
 
-    $result = Invoke-CdpJsonExpression -Socket $Socket -Expression $expression
-    if (-not $result.ok) {
-        throw ("Nao foi possivel acionar o login PDA: " + [string]$result.reason)
+    $result = [string](Invoke-CdpExpression -Socket $Socket -Expression $expression)
+    if ($result -ne "OK") {
+        throw ("Nao foi possivel acionar o login PDA: " + $result)
     }
 
     Write-RoboLog "Login PDA enviado. Aguardando autenticacao."
@@ -250,7 +294,7 @@ function Invoke-PdaLogin {
     throw "Timeout aguardando autenticacao no PDA. Confira usuario e senha."
 }
 
-function Ensure-PdaAuditPage {
+function Ensure-PdaAuditPage {function Ensure-PdaAuditPage {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
         $Config
