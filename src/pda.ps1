@@ -148,8 +148,13 @@ function Get-PdaPageState {
     const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
     const bodyText = document.body ? document.body.innerText : '';
     const text = norm(bodyText);
+    const path = (location.pathname || '').toLowerCase();
+
     const hasPassword = document.querySelectorAll('input[type="password"]').length > 0;
-    const hasLoginWord = text.includes('login') || text.includes('usuario') || text.includes('usuário');
+    const hasEnter = [...document.querySelectorAll('button,input[type="submit"],input[type="button"],a')].some(e =>
+      norm(e.innerText || e.value || e.textContent) === 'entrar'
+    );
+
     const hasAuditSelect = [...document.querySelectorAll('select')].some(s =>
       [...s.options].some(o => norm(o.textContent).includes('centerlar comercio de utilidades'))
     );
@@ -157,8 +162,12 @@ function Get-PdaPageState {
       norm(e.innerText || e.value || e.textContent) === 'pesquisar'
     );
 
+    const systemsPage = path.endsWith('/systems.aspx') ||
+      (text.includes('auditoria de preço') && text.includes('administração') && text.includes('inventário'));
+
     let kind = 'OTHER';
-    if (hasPassword || hasLoginWord) kind = 'LOGIN';
+    if (hasPassword && hasEnter) kind = 'LOGIN';
+    if (systemsPage) kind = 'SYSTEMS';
     if (hasAuditSelect && hasSearch) kind = 'AUDIT';
 
     const safe = v => String(v == null ? '' : v).replace(/[|\r\n]+/g,' ').slice(0,180);
@@ -180,7 +189,7 @@ function Get-PdaPageState {
 
     $raw = [string](Invoke-CdpExpression -Socket $Socket -Expression $expression)
     if ([string]::IsNullOrWhiteSpace($raw)) {
-        return [PSCustomObject]@{ kind="EMPTY"; url=""; ready=""; inputCount=0; selectCount=0; iframeCount=0; title=""; snippet=""; login=$false; audit=$false }
+        return [PSCustomObject]@{ kind="EMPTY"; url=""; ready=""; inputCount=0; selectCount=0; iframeCount=0; title=""; snippet=""; login=$false; systems=$false; audit=$false }
     }
 
     $parts = $raw.Split('|', 8)
@@ -198,6 +207,7 @@ function Get-PdaPageState {
         title = if ($parts.Count -gt 6) { $parts[6] } else { "" }
         snippet = if ($parts.Count -gt 7) { $parts[7] } else { "" }
         login = ($parts[0] -eq "LOGIN")
+        systems = ($parts[0] -eq "SYSTEMS")
         audit = ($parts[0] -eq "AUDIT")
     }
 }
@@ -215,14 +225,14 @@ function Wait-PdaRecognizedPage {
     do {
         try {
             $lastState = Get-PdaPageState -Socket $Socket
-            if ($lastState -and ([bool]$lastState.login -or [bool]$lastState.audit)) {
+            if ($lastState -and ([bool]$lastState.login -or [bool]$lastState.systems -or [bool]$lastState.audit)) {
                 return $lastState
             }
         }
         catch {
             $lastError = $_.Exception.Message
         }
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 400
     } while ((Get-Date) -lt $deadline)
 
     if ($lastState) {
@@ -300,6 +310,49 @@ function Invoke-PdaLogin {
     throw "Timeout aguardando autenticacao no PDA. Confira usuario e senha."
 }
 
+function Ensure-PdaAuthenticated {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        $Config
+    )
+
+    $baseUrl = ([string]$Config.pda.baseUrl).TrimEnd('/')
+
+    Write-RoboLog ("Garantindo autenticacao PDA antes de qualquer coleta: " + $baseUrl)
+    Navigate-Cdp -Socket $Socket -Url $baseUrl -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
+
+    $state = Wait-PdaRecognizedPage -Socket $Socket -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
+
+    if ([bool]$state.login) {
+        Write-RoboLog "Tela de login confirmada. Autenticando agora."
+        Invoke-PdaLogin -Socket $Socket -Config $Config
+
+        $deadline = (Get-Date).AddSeconds([int]$Config.pda.pageLoadTimeoutSeconds)
+        do {
+            Start-Sleep -Milliseconds 400
+            $state = Get-PdaPageState -Socket $Socket
+
+            if ([bool]$state.login) {
+                continue
+            }
+
+            if ([bool]$state.systems -or [bool]$state.audit) {
+                Write-RoboLog ("Sessao PDA autenticada e confirmada. URL atual: " + [string]$state.url)
+                return $state
+            }
+        } while ((Get-Date) -lt $deadline)
+
+        throw "Login foi acionado, mas a sessao autenticada nao foi confirmada."
+    }
+
+    if ([bool]$state.systems -or [bool]$state.audit) {
+        Write-RoboLog ("Sessao PDA ja estava autenticada. URL atual: " + [string]$state.url)
+        return $state
+    }
+
+    throw ("Nao foi possivel confirmar autenticacao PDA. Estado atual: " + [string]$state.kind)
+}
+
 function Ensure-PdaAuditPage {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
@@ -309,39 +362,27 @@ function Ensure-PdaAuditPage {
     $baseUrl = ([string]$Config.pda.baseUrl).TrimEnd('/')
     $auditUrl = $baseUrl + [string]$Config.pda.auditPath
 
-    # 1) Primeiro reconhece a pagina atual. Se for login, autentica ANTES
-    # de tentar abrir diretamente a Auditoria.
-    $state = $null
-    try {
-        $state = Wait-PdaRecognizedPage -Socket $Socket -TimeoutSeconds 15
-    }
-    catch {
-        Write-RoboLog ("Pagina inicial ainda nao reconhecida. Abrindo pagina base do PDA. Detalhe: " + $_.Exception.Message) "AVISO"
-        Navigate-Cdp -Socket $Socket -Url $baseUrl -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
-        $state = Wait-PdaRecognizedPage -Socket $Socket -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
+    # Regra rigida: nunca tentar abrir Auditoria sem antes confirmar sessao autenticada.
+    $authState = Ensure-PdaAuthenticated -Socket $Socket -Config $Config
+
+    if ([bool]$authState.audit) {
+        Write-RoboLog "Tela de Auditoria de Preco ja esta aberta e a sessao esta autenticada."
+        return
     }
 
-    if ([bool]$state.login) {
-        Write-RoboLog "Tela de login detectada. Autenticando antes de abrir a Auditoria."
-        Invoke-PdaLogin -Socket $Socket -Config $Config
-        Start-Sleep -Milliseconds 800
-    }
-
-    # 2) Com a sessao autenticada (ou ja existente), abre a tela de Auditoria.
-    Write-RoboLog ("Abrindo tela de Auditoria de Preco: " + $auditUrl)
+    Write-RoboLog ("Sessao confirmada. Abrindo tela de Auditoria de Preco: " + $auditUrl)
     Navigate-Cdp -Socket $Socket -Url $auditUrl -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
     $state = Wait-PdaRecognizedPage -Socket $Socket -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
 
-    # 3) Se a sessao expirou no meio do caminho, refaz login uma vez e retorna.
     if ([bool]$state.login) {
-        Write-RoboLog "Sessao PDA expirou ao abrir Auditoria. Refazendo login." "AVISO"
-        Invoke-PdaLogin -Socket $Socket -Config $Config
+        Write-RoboLog "Sessao expirou ao abrir a Auditoria. Refazendo autenticacao antes de continuar." "AVISO"
+        [void](Ensure-PdaAuthenticated -Socket $Socket -Config $Config)
         Navigate-Cdp -Socket $Socket -Url $auditUrl -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
         $state = Wait-PdaRecognizedPage -Socket $Socket -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
     }
 
     if (-not [bool]$state.audit) {
-        throw ("Tela de Auditoria de Preco nao reconhecida apos autenticacao. URL: " + [string]$state.url)
+        throw ("Tela de Auditoria de Preco nao reconhecida apos sessao autenticada. URL: " + [string]$state.url)
     }
 
     Write-RoboLog "Tela de Auditoria de Preco pronta."
