@@ -130,6 +130,12 @@ function Start-RoboPrecosBrowser {
         throw ("Chrome DevTools conectou, mas nenhum ClientWebSocket valido foi retornado. Saidas recebidas: " + $types)
     }
 
+    $probe = Invoke-CdpExpression -Socket $socket -Expression "'ROBO_CDP_OK'"
+    if ([string]$probe -ne "ROBO_CDP_OK") {
+        throw ("Canal Chrome DevTools conectado, mas Runtime.evaluate nao devolveu o valor esperado. Recebido: " + [string]$probe)
+    }
+    Write-RoboLog "Canal Chrome DevTools validado (Runtime.evaluate OK)."
+
     return $socket
 }
 
