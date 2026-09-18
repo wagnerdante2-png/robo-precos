@@ -116,7 +116,21 @@ function Start-RoboPrecosBrowser {
     }
 
     Wait-CdpEndpoint -Port $port -TimeoutSeconds 30
-    return (Connect-CdpPage -Port $port -UrlContains "pdacloud.com.br")
+
+    # Funcoes PowerShell podem devolver mais de um item pelo pipeline.
+    # Filtramos explicitamente apenas o ClientWebSocket para impedir
+    # que qualquer saida auxiliar transforme o socket em System.Object[].
+    $connectionOutput = @(Connect-CdpPage -Port $port -UrlContains "pdacloud.com.br")
+    $socket = @($connectionOutput | Where-Object { $_ -is [System.Net.WebSockets.ClientWebSocket] }) | Select-Object -First 1
+
+    if (-not $socket) {
+        $types = @($connectionOutput | ForEach-Object {
+            if ($null -eq $_) { "<null>" } else { $_.GetType().FullName }
+        }) -join ", "
+        throw ("Chrome DevTools conectou, mas nenhum ClientWebSocket valido foi retornado. Saidas recebidas: " + $types)
+    }
+
+    return $socket
 }
 
 function Get-PdaPageState {
