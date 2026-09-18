@@ -306,24 +306,42 @@ function Ensure-PdaAuditPage {
         $Config
     )
 
-    $auditUrl = ([string]$Config.pda.baseUrl).TrimEnd('/') + [string]$Config.pda.auditPath
+    $baseUrl = ([string]$Config.pda.baseUrl).TrimEnd('/')
+    $auditUrl = $baseUrl + [string]$Config.pda.auditPath
 
-    Write-RoboLog ("Abrindo tela de Auditoria de Preco: " + $auditUrl)
-    Navigate-Cdp -Socket $Socket -Url $auditUrl -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
-
-    $state = Wait-PdaRecognizedPage -Socket $Socket -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
+    # 1) Primeiro reconhece a pagina atual. Se for login, autentica ANTES
+    # de tentar abrir diretamente a Auditoria.
+    $state = $null
+    try {
+        $state = Wait-PdaRecognizedPage -Socket $Socket -TimeoutSeconds 15
+    }
+    catch {
+        Write-RoboLog ("Pagina inicial ainda nao reconhecida. Abrindo pagina base do PDA. Detalhe: " + $_.Exception.Message) "AVISO"
+        Navigate-Cdp -Socket $Socket -Url $baseUrl -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
+        $state = Wait-PdaRecognizedPage -Socket $Socket -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
+    }
 
     if ([bool]$state.login) {
-        Write-RoboLog "Sessao PDA inexistente ou expirada. Refazendo login." "AVISO"
+        Write-RoboLog "Tela de login detectada. Autenticando antes de abrir a Auditoria."
         Invoke-PdaLogin -Socket $Socket -Config $Config
+        Start-Sleep -Milliseconds 800
+    }
 
-        Write-RoboLog "Login concluido. Abrindo novamente a Auditoria de Preco."
+    # 2) Com a sessao autenticada (ou ja existente), abre a tela de Auditoria.
+    Write-RoboLog ("Abrindo tela de Auditoria de Preco: " + $auditUrl)
+    Navigate-Cdp -Socket $Socket -Url $auditUrl -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
+    $state = Wait-PdaRecognizedPage -Socket $Socket -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
+
+    # 3) Se a sessao expirou no meio do caminho, refaz login uma vez e retorna.
+    if ([bool]$state.login) {
+        Write-RoboLog "Sessao PDA expirou ao abrir Auditoria. Refazendo login." "AVISO"
+        Invoke-PdaLogin -Socket $Socket -Config $Config
         Navigate-Cdp -Socket $Socket -Url $auditUrl -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
         $state = Wait-PdaRecognizedPage -Socket $Socket -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
     }
 
     if (-not [bool]$state.audit) {
-        throw ("Tela de Auditoria de Preco nao reconhecida. URL: " + [string]$state.url)
+        throw ("Tela de Auditoria de Preco nao reconhecida apos autenticacao. URL: " + [string]$state.url)
     }
 
     Write-RoboLog "Tela de Auditoria de Preco pronta."
