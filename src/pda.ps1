@@ -100,9 +100,12 @@ function Start-RoboPrecosBrowser {
         Write-RoboLog ("Abrindo Chrome controlado localmente na porta CDP " + $port)
         $arguments = @(
             "--remote-debugging-port=$port",
+            "--remote-debugging-address=127.0.0.1",
+            "--remote-allow-origins=*",
             ("--user-data-dir=" + '"' + $profilePath + '"'),
             "--no-first-run",
             "--no-default-browser-check",
+            "--new-window",
             "--start-maximized",
             $baseUrl
         )
