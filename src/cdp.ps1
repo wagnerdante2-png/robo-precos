@@ -52,8 +52,31 @@ function Connect-CdpPage {
     }
 
     $socket = New-Object System.Net.WebSockets.ClientWebSocket
-    $uri = New-Object System.Uri([string]$target.webSocketDebuggerUrl)
-    $socket.ConnectAsync($uri, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+
+    # Ambiente corporativo pode ter proxy configurado no Windows. O CDP e local
+    # e nunca deve tentar sair pela rede/proxy.
+    try {
+        $socket.Options.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
+    }
+    catch {}
+
+    $wsUrl = [string]$target.webSocketDebuggerUrl
+    $wsUrl = $wsUrl -replace 'ws://localhost:', 'ws://127.0.0.1:'
+    $wsUrl = $wsUrl -replace 'ws://\[::1\]:', 'ws://127.0.0.1:'
+
+    Write-Host ("Conectando ao Chrome local: " + $wsUrl) -ForegroundColor DarkGray
+
+    $uri = New-Object System.Uri($wsUrl)
+    try {
+        $socket.ConnectAsync($uri, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+    }
+    catch {
+        try { $socket.Dispose() } catch {}
+        throw ("Falha na conexao local com o Chrome DevTools. " +
+               "O navegador abriu, mas o PowerShell nao conseguiu conectar ao WebSocket local. " +
+               "Detalhe: " + $_.Exception.Message)
+    }
+
     return $socket
 }
 
