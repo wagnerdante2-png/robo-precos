@@ -187,6 +187,13 @@ function Invoke-RoboPrecosNetworkCollection {
     )
 
     $stores = @(Get-PdaStoreList -Socket $Socket)
+
+    if ($stores.Count -lt 2) {
+        throw ("Modo rede identificou apenas {0} loja(s). Coleta interrompida para evitar falso sucesso." -f $stores.Count)
+    }
+
+    Write-RoboLog ("Modo rede confirmado com {0} lojas. Primeira={1}; Ultima={2}" -f $stores.Count, $stores[0].Loja, $stores[$stores.Count - 1].Loja)
+
     $paths = Get-RoboPrecosCollectionPaths -StartDate $StartDate -EndDate $EndDate
     $records = New-RoboPrecosRecordMap -CheckpointPath $paths.Checkpoint -StartDate $StartDate -EndDate $EndDate
 
