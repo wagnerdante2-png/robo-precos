@@ -1,0 +1,16 @@
+{
+  "pda": {
+    "baseUrl": "https://centerlar.pdacloud.com.br:4410",
+    "auditPath": "/Views/Auditoria/AuditoriaPreco.aspx",
+    "debugPort": 9223,
+    "profileDirectory": "output\\chrome_pda",
+    "credentialFile": "data\\pda_credential.json",
+    "pageLoadTimeoutSeconds": 45,
+    "queryTimeoutSeconds": 90
+  },
+  "test": {
+    "store": "",
+    "startDate": "",
+    "endDate": ""
+  }
+}
