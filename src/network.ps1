@@ -9,9 +9,12 @@ function Get-PdaStoreList {
     norm(o.textContent).includes('centerlar comercio de utilidades')
   ));
 
-  if (!center) return 'ERROR|center-select-not-found';
+  if (!center) {
+    return { ok:false, reason:'center-select-not-found', stores:[] };
+  }
 
-  const rows = [];
+  const stores = [];
+
   for (const option of [...center.options]) {
     const text = (option.textContent || '').replace(/[\r\n\t|]+/g,' ').trim();
     const m = text.match(/^(\d+)-(\d+)\s*-\s*(.+)$/);
@@ -21,36 +24,45 @@ function Get-PdaStoreList {
     const b = parseInt(m[2], 10);
     if (!Number.isFinite(a) || a <= 0 || a !== b) continue;
 
-    rows.push(a + '\t' + text);
+    stores.push({
+      numero: a,
+      loja: 'ML' + String(a).padStart(2,'0'),
+      textoPda: text,
+      value: option.value
+    });
   }
 
-  rows.sort((x,y) => parseInt(x.split('\t')[0],10) - parseInt(y.split('\t')[0],10));
-  return rows.join('\n');
+  stores.sort((x,y) => x.numero - y.numero);
+
+  return {
+    ok:true,
+    count:stores.length,
+    stores
+  };
 })()
 '@
 
-    $raw = [string](Invoke-CdpExpression -Socket $Socket -Expression $expression)
-    if ([string]::IsNullOrWhiteSpace($raw)) {
-        throw "O dropdown de lojas foi encontrado, mas nenhuma loja valida foi retornada."
+    $result = Invoke-CdpJsonExpression -Socket $Socket -Expression $expression
+
+    if ($null -eq $result) {
+        throw "O PDA nao retornou a lista de lojas."
     }
 
-    if ($raw.StartsWith("ERROR|")) {
-        throw ("Nao foi possivel listar as lojas do PDA: " + $raw)
+    if (-not [bool]$result.ok) {
+        throw ("Nao foi possivel listar as lojas do PDA: " + [string]$result.reason)
     }
 
     $stores = @()
-    foreach ($line in ($raw -split [Environment]::NewLine)) {
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
-        $parts = $line -split ([char]9), 2
-        if ($parts.Count -lt 2) { continue }
 
-        $number = 0
-        if (-not [int]::TryParse($parts[0], [ref]$number)) { continue }
+    foreach ($row in @($result.stores)) {
+        $number = [int]$row.numero
+        if ($number -le 0) { continue }
 
         $stores += [PSCustomObject]@{
             Numero = $number
-            Loja = ("ML{0:D2}" -f $number)
-            TextoPda = $parts[1].Trim()
+            Loja = [string]$row.loja
+            TextoPda = [string]$row.textoPda
+            ValuePda = [string]$row.value
         }
     }
 
@@ -58,7 +70,9 @@ function Get-PdaStoreList {
         throw "Nenhuma loja valida foi identificada no dropdown Centro do PDA."
     }
 
-    return $stores
+    Write-RoboLog ("Dropdown Centro lido com sucesso: {0} lojas identificadas." -f $stores.Count)
+
+    return @($stores | Sort-Object Numero)
 }
 
 function ConvertTo-RoboPrecosDateKey {
