@@ -50,6 +50,10 @@ try {
     [void](ConvertTo-RoboPrecosDateKey $startDate)
     [void](ConvertTo-RoboPrecosDateKey $endDate)
 
+    # Mesma regra para modo 1 e modo 2: credencial precisa existir ANTES de abrir/coletar.
+    Write-RoboLog "Validando credencial PDA antes de iniciar navegador/coleta."
+    $null = Get-PdaCredential -Config $config
+
     $socket = Start-RoboPrecosBrowser -Config $config
     Ensure-PdaAuditPage -Socket $socket -Config $config
 
