@@ -156,6 +156,41 @@ function Get-PdaPageState {
     return (Invoke-CdpExpression -Socket $Socket -Expression $expression)
 }
 
+function Wait-PdaRecognizedPage {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [int]$TimeoutSeconds = 30
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastState = $null
+    $lastError = ""
+
+    do {
+        try {
+            $lastState = Get-PdaPageState -Socket $Socket
+            if ($lastState -and ([bool]$lastState.login -or [bool]$lastState.audit)) {
+                return $lastState
+            }
+        }
+        catch {
+            $lastError = $_.Exception.Message
+        }
+
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    if ($lastState) {
+        throw ("PDA abriu uma pagina nao reconhecida. URL={0} | ready={1} | login={2} | audit={3}" -f $lastState.url, $lastState.ready, $lastState.login, $lastState.audit)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($lastError)) {
+        throw ("Nao foi possivel ler o DOM da pagina PDA via Chrome DevTools. Ultimo erro: " + $lastError)
+    }
+
+    throw "PDA nao apresentou uma tela reconhecivel dentro do tempo limite."
+}
+
 function Invoke-PdaLogin {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
@@ -222,14 +257,19 @@ function Ensure-PdaAuditPage {
     )
 
     $auditUrl = ([string]$Config.pda.baseUrl).TrimEnd('/') + [string]$Config.pda.auditPath
+
+    Write-RoboLog ("Abrindo tela de Auditoria de Preco: " + $auditUrl)
     Navigate-Cdp -Socket $Socket -Url $auditUrl -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
 
-    $state = Get-PdaPageState -Socket $Socket
+    $state = Wait-PdaRecognizedPage -Socket $Socket -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
+
     if ([bool]$state.login) {
         Write-RoboLog "Sessao PDA inexistente ou expirada. Refazendo login." "AVISO"
         Invoke-PdaLogin -Socket $Socket -Config $Config
+
+        Write-RoboLog "Login concluido. Abrindo novamente a Auditoria de Preco."
         Navigate-Cdp -Socket $Socket -Url $auditUrl -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
-        $state = Get-PdaPageState -Socket $Socket
+        $state = Wait-PdaRecognizedPage -Socket $Socket -TimeoutSeconds ([int]$Config.pda.pageLoadTimeoutSeconds)
     }
 
     if (-not [bool]$state.audit) {
