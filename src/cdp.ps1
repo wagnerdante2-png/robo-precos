@@ -43,27 +43,52 @@ function Get-CdpPageTarget {
 function Connect-CdpPage {
     param(
         [int]$Port,
-        [string]$UrlContains = ""
+        [string]$UrlContains = "",
+        [int]$TimeoutSeconds = 30
     )
 
-    $targets = @(Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/json" -f $Port) -UseBasicParsing -TimeoutSec 5)
-    $pages = @($targets | Where-Object { $_.type -eq "page" })
-
-    if ($pages.Count -eq 0) {
-        throw "Nenhuma aba do Chrome disponivel para automacao."
-    }
-
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $target = $null
-    if (-not [string]::IsNullOrWhiteSpace($UrlContains)) {
-        $target = @($pages | Where-Object { ([string]$_.url) -like ("*" + $UrlContains + "*") }) | Select-Object -First 1
-    }
+    $lastPages = @()
+
+    do {
+        $targets = @(Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/json" -f $Port) -UseBasicParsing -TimeoutSec 5)
+        $pages = @($targets | Where-Object { $_.type -eq "page" })
+        $lastPages = $pages
+
+        if (-not [string]::IsNullOrWhiteSpace($UrlContains)) {
+            $target = @($pages | Where-Object {
+                ([string]$_.url) -like ("*" + $UrlContains + "*")
+            }) | Select-Object -First 1
+
+            if ($target) { break }
+
+            # O Chrome pode publicar extensoes/background antes da aba PDA.
+            # Quando um dominio foi solicitado, nunca caimos no primeiro target.
+            Start-Sleep -Milliseconds 300
+            continue
+        }
+
+        $target = @($pages | Where-Object {
+            -not ([string]$_.url).StartsWith("chrome-extension://")
+        }) | Select-Object -First 1
+
+        if (-not $target) {
+            $target = $pages | Select-Object -First 1
+        }
+
+        if ($target) { break }
+        Start-Sleep -Milliseconds 300
+    } while ((Get-Date) -lt $deadline)
 
     if (-not $target) {
-        $target = $pages | Select-Object -First 1
+        $seen = @($lastPages | ForEach-Object { [string]$_.url }) -join " | "
+        if (-not [string]::IsNullOrWhiteSpace($UrlContains)) {
+            throw ("Nenhuma aba do Chrome correspondente a '" + $UrlContains + "' apareceu dentro do tempo limite. Targets vistos: " + $seen)
+        }
+        throw ("Nenhuma aba do Chrome disponivel para automacao. Targets vistos: " + $seen)
     }
 
-    # PowerShell pode promover propriedades de colecoes para arrays.
-    # Aqui garantimos explicitamente UM unico target e UMA unica URL.
     if ($target -is [System.Array]) {
         $target = @($target)[0]
     }
@@ -77,11 +102,11 @@ function Connect-CdpPage {
     $wsUrl = $wsUrl -replace 'ws://localhost:', 'ws://127.0.0.1:'
     $wsUrl = $wsUrl -replace 'ws://\[::1\]:', 'ws://127.0.0.1:'
 
+    Write-RoboLog ("Target Chrome selecionado: " + [string]$target.url)
     Write-Host ("Conectando ao Chrome local: " + $wsUrl) -ForegroundColor DarkGray
 
     $socket = New-Object System.Net.WebSockets.ClientWebSocket
 
-    # Nunca usar proxy corporativo para o canal local 127.0.0.1.
     try {
         $socket.Options.Proxy = New-Object System.Net.WebProxy
     }
