@@ -46,35 +46,65 @@ function Connect-CdpPage {
         [string]$UrlContains = ""
     )
 
-    $target = Get-CdpPageTarget -Port $Port -UrlContains $UrlContains
-    if (-not $target.webSocketDebuggerUrl) {
+    $targets = @(Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/json" -f $Port) -UseBasicParsing -TimeoutSec 5)
+    $pages = @($targets | Where-Object { $_.type -eq "page" })
+
+    if ($pages.Count -eq 0) {
+        throw "Nenhuma aba do Chrome disponivel para automacao."
+    }
+
+    $target = $null
+    if (-not [string]::IsNullOrWhiteSpace($UrlContains)) {
+        $target = @($pages | Where-Object { ([string]$_.url) -like ("*" + $UrlContains + "*") }) | Select-Object -First 1
+    }
+
+    if (-not $target) {
+        $target = $pages | Select-Object -First 1
+    }
+
+    # PowerShell pode promover propriedades de colecoes para arrays.
+    # Aqui garantimos explicitamente UM unico target e UMA unica URL.
+    if ($target -is [System.Array]) {
+        $target = @($target)[0]
+    }
+
+    $wsValues = @($target.webSocketDebuggerUrl)
+    if ($wsValues.Count -eq 0 -or [string]::IsNullOrWhiteSpace([string]$wsValues[0])) {
         throw "A aba do Chrome nao expos webSocketDebuggerUrl."
     }
 
-    $socket = New-Object System.Net.WebSockets.ClientWebSocket
-
-    # Ambiente corporativo pode ter proxy configurado no Windows. O CDP e local
-    # e nunca deve tentar sair pela rede/proxy.
-    try {
-        $socket.Options.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
-    }
-    catch {}
-
-    $wsUrl = [string]$target.webSocketDebuggerUrl
+    $wsUrl = [string]$wsValues[0]
     $wsUrl = $wsUrl -replace 'ws://localhost:', 'ws://127.0.0.1:'
     $wsUrl = $wsUrl -replace 'ws://\[::1\]:', 'ws://127.0.0.1:'
 
     Write-Host ("Conectando ao Chrome local: " + $wsUrl) -ForegroundColor DarkGray
 
+    $socket = New-Object System.Net.WebSockets.ClientWebSocket
+
+    # Nunca usar proxy corporativo para o canal local 127.0.0.1.
+    try {
+        $socket.Options.Proxy = New-Object System.Net.WebProxy
+    }
+    catch {
+        try { $socket.Options.Proxy = $null } catch {}
+    }
+
     $uri = New-Object System.Uri($wsUrl)
+
     try {
         $socket.ConnectAsync($uri, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
     }
     catch {
+        $detail = $_.Exception.Message
+        $inner = $_.Exception.InnerException
+        while ($inner) {
+            $detail += " -> " + $inner.Message
+            $inner = $inner.InnerException
+        }
         try { $socket.Dispose() } catch {}
         throw ("Falha na conexao local com o Chrome DevTools. " +
                "O navegador abriu, mas o PowerShell nao conseguiu conectar ao WebSocket local. " +
-               "Detalhe: " + $_.Exception.Message)
+               "URL: " + $wsUrl + " | Detalhe: " + $detail)
     }
 
     return $socket
