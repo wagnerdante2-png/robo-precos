@@ -1294,6 +1294,107 @@ function ConvertFrom-RoboPrecosBiCurrentRows {
     return @($records.Values | Sort-Object Loja)
 }
 
+function Get-RoboPrecosBiCurrentVisualTotal {
+    param([array]$Rows)
+
+    foreach ($row in @($Rows)) {
+        $cells = if ($row -and ($row.PSObject.Properties.Name -contains "Cells")) { @($row.Cells) } else { @($row) }
+        if ($cells.Count -lt 3) { continue }
+
+        $label = ConvertTo-RoboPrecosNormalizedText ([string]$cells[0])
+        if ($label -ne "TOTAL") { continue }
+
+        if ($cells.Count -lt 9) { continue }
+
+        $quantity = ConvertFrom-RoboPrecosBiInteger $cells[$cells.Count - 2]
+        $discount = ConvertFrom-RoboPrecosBiDecimal $cells[$cells.Count - 1]
+
+        if ($null -eq $quantity -or $null -eq $discount) {
+            continue
+        }
+
+        return [PSCustomObject]@{
+            QuantidadeCupons = [int]$quantity
+            Desconto = [double]$discount
+        }
+    }
+
+    return $null
+}
+
+function Test-RoboPrecosBiCurrentIntegrity {
+    param(
+        [Parameter(Mandatory = $true)][array]$Records,
+        [Parameter(Mandatory = $true)][array]$Rows
+    )
+
+    if ($Records.Count -eq 0) {
+        throw "Integridade Power BI: nenhuma loja valida foi coletada."
+    }
+
+    $visualTotal = Get-RoboPrecosBiCurrentVisualTotal -Rows $Rows
+    if (-not $visualTotal) {
+        throw "Integridade Power BI: o rodape TOTAL do visual PRECO ERRADO nao foi capturado. A coleta nao sera considerada completa."
+    }
+
+    $sumQuantity = 0
+    $sumDiscount = 0.0
+    $companies = New-Object System.Collections.Generic.List[int]
+
+    foreach ($record in $Records) {
+        $sumQuantity += [int]$record.QuantidadeCupons
+        $sumDiscount += [double]$record.Desconto
+        $companies.Add([int]$record.Empresa)
+    }
+
+    $sumDiscount = [Math]::Round($sumDiscount, 2, [MidpointRounding]::AwayFromZero)
+    $visualDiscount = [Math]::Round([double]$visualTotal.Desconto, 2, [MidpointRounding]::AwayFromZero)
+
+    $quantityMatches = ($sumQuantity -eq [int]$visualTotal.QuantidadeCupons)
+    $discountMatches = ([Math]::Abs($sumDiscount - $visualDiscount) -lt 0.005)
+
+    $uniqueCompanies = @($companies | Sort-Object -Unique)
+    $maxCompany = if ($uniqueCompanies.Count -gt 0) { [int]($uniqueCompanies | Measure-Object -Maximum).Maximum } else { 0 }
+    $missingCompanies = @()
+
+    if ($maxCompany -gt 0) {
+        $set = @{}
+        foreach ($company in $uniqueCompanies) { $set[[int]$company] = $true }
+        for ($i = 1; $i -le $maxCompany; $i++) {
+            if (-not $set.ContainsKey($i)) {
+                $missingCompanies += $i
+            }
+        }
+    }
+
+    if (-not $quantityMatches -or -not $discountMatches) {
+        throw (
+            "Integridade Power BI falhou. Soma capturada: " +
+            $sumQuantity + " cupons / R$ " + $sumDiscount.ToString("N2",[Globalization.CultureInfo]::GetCultureInfo("pt-BR")) +
+            " | Total do visual: " + [int]$visualTotal.QuantidadeCupons + " cupons / R$ " +
+            $visualDiscount.ToString("N2",[Globalization.CultureInfo]::GetCultureInfo("pt-BR"))
+        )
+    }
+
+    Write-RoboLog (
+        "Integridade Power BI OK: " + $Records.Count + " lojas | " +
+        $sumQuantity + " cupons | R$ " +
+        $sumDiscount.ToString("N2",[Globalization.CultureInfo]::GetCultureInfo("pt-BR")) +
+        " | Total do visual reconciliado."
+    )
+
+    return [PSCustomObject]@{
+        Passed = $true
+        RecordCount = $Records.Count
+        SumQuantity = $sumQuantity
+        SumDiscount = $sumDiscount
+        VisualQuantity = [int]$visualTotal.QuantidadeCupons
+        VisualDiscount = $visualDiscount
+        MaxCompany = $maxCompany
+        MissingCompanies = @($missingCompanies)
+    }
+}
+
 function Get-RoboPrecosMonthNumber {
     param([string]$MonthName)
 
@@ -1395,6 +1496,7 @@ function Invoke-RoboPrecosBiDiscountCollection {
             Open-RoboPrecosBiPage -Socket $socket -Config $Config -Url ([string]$bi.summaryUrl) -RequiredTexts @("DESCONTO POR MOTIVO", "PRECO ERRADO")
             $rows = @(Get-RoboPrecosBiGridRows -Socket $socket -TitleContains "DESCONTO POR MOTIVO" -RequiredHeaders @("EMPRESA", "PRECO ERRADO", "CUPONS", "DESCONTO"))
             $records = @(ConvertFrom-RoboPrecosBiCurrentRows -Rows $rows)
+            $integrity = Test-RoboPrecosBiCurrentIntegrity -Records $records -Rows $rows
         }
         else {
             Write-Host ""
@@ -1409,6 +1511,23 @@ function Invoke-RoboPrecosBiDiscountCollection {
 
             $rows = @(Get-RoboPrecosBiGridRows -Socket $socket -RequiredHeaders @("ANO", "MES", "EMPRESA", "TIPO", "VALOR TOTAL", "DESCONTO", "QUANTIDADE CUPONS"))
             $records = @(ConvertFrom-RoboPrecosBiHistoricalRows -Rows $rows -MonthDate $decision.MonthDate)
+
+            $histQuantity = 0
+            $histDiscount = 0.0
+            foreach ($record in $records) {
+                $histQuantity += [int]$record.QuantidadeCupons
+                $histDiscount += [double]$record.Desconto
+            }
+            $integrity = [PSCustomObject]@{
+                Passed = $true
+                RecordCount = $records.Count
+                SumQuantity = $histQuantity
+                SumDiscount = [Math]::Round($histDiscount, 2, [MidpointRounding]::AwayFromZero)
+                VisualQuantity = $null
+                VisualDiscount = $null
+                MaxCompany = 0
+                MissingCompanies = @()
+            }
         }
 
         if ($records.Count -eq 0) {
@@ -1422,6 +1541,18 @@ function Invoke-RoboPrecosBiDiscountCollection {
         Write-Host ("Fonte              : {0}" -f $decision.Mode)
         Write-Host ("Mes                : {0}" -f $decision.MonthDate.ToString("MM/yyyy"))
         Write-Host ("Lojas com valores  : {0}" -f $records.Count)
+        Write-Host ("Cupons coletados   : {0}" -f $integrity.SumQuantity)
+        Write-Host ("Desconto coletado  : R$ {0}" -f ([double]$integrity.SumDiscount).ToString("N2",[Globalization.CultureInfo]::GetCultureInfo("pt-BR")))
+
+        if ([string]$decision.Mode -eq "CURRENT") {
+            Write-Host ("Total visual BI    : {0} cupons / R$ {1}" -f $integrity.VisualQuantity, ([double]$integrity.VisualDiscount).ToString("N2",[Globalization.CultureInfo]::GetCultureInfo("pt-BR"))) -ForegroundColor Green
+            Write-Host "Integridade         : OK - soma das lojas = Total do BI" -ForegroundColor Green
+
+            if (@($integrity.MissingCompanies).Count -gt 0) {
+                Write-Host ("IDs nao retornados  : " + (@($integrity.MissingCompanies) -join ", ")) -ForegroundColor Yellow
+            }
+        }
+
         Write-Host ("Snapshot de controle: {0}" -f $snapshot)
         Write-Host ""
 
@@ -1431,6 +1562,7 @@ function Invoke-RoboPrecosBiDiscountCollection {
             Records = $records
             RecordCount = $records.Count
             SnapshotPath = $snapshot
+            Integrity = $integrity
         }
     }
     finally {
