@@ -221,3 +221,28 @@ O robo:
 7. confirma o valor efetivamente aplicado antes de avancar.
 
 Isso elimina o erro `Element is not focusable`.
+
+
+## Reconciliacao com o Total do BI
+
+No mes corrente, o RoboPrecos nao considera mais suficiente apenas contar lojas.
+
+Ele soma todos os registros capturados de PRECO ERRADO e compara com o rodape Total do proprio visual do Power BI:
+
+- Quantidade Cupons;
+- Desconto.
+
+A coleta corrente so e considerada integra quando:
+
+`soma das lojas = Total do visual`
+
+Se qualquer valor divergir, o modulo falha e nao deve seguir para gravacao.
+
+O modo 3 agora imprime todas as lojas coletadas, sem corte nas 15 primeiras, e mostra:
+
+- total de lojas;
+- soma dos cupons;
+- soma dos descontos;
+- Total do visual;
+- resultado da reconciliacao;
+- IDs de empresa ausentes dentro do intervalo encontrado.
