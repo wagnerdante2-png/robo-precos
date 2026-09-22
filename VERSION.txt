@@ -1,12 +1,12 @@
-RoboPrecos Portable v0.5.3
+RoboPrecos Portable v0.5.4
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
-LOGIN PRESERVADO BYTE A BYTE da v0.5.2
-Coleta restrita ao visual DESCONTO POR MOTIVO
-Identifica viewport vertical interno do visual
-Usa scrollHeight/clientHeight + geometria da borda direita
-Suporta role=scrollbar e aria-controls
-Percorre viewport interno topo->fundo + reverso
+LOGIN PRESERVADO
+Chrome Power BI com UMA aba canonica por execucao
+Aba canonica ativada e trazida para frente
+Abas antigas do Chrome dedicado sao fechadas
+Mesmo target/socket usado em login, relatorio e coleta
+Viewport interno do visual DESCONTO POR MOTIVO
 Linhas identificadas pela coluna EMPRESA
 Ordem visual indiferente
 Conflito da mesma empresa interrompe a coleta
