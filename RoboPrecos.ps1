@@ -1,6 +1,6 @@
 Write-Host ""
 Write-Host "===================================================" -ForegroundColor Cyan
-Write-Host " ROBO PRECOS - PDA + POWER BI v0.5.0" -ForegroundColor Cyan
+Write-Host " ROBO PRECOS - PDA + POWER BI v0.5.1" -ForegroundColor Cyan
 Write-Host " AUDITORIA DE PRECOS + DESCONTOS PRECO ERRADO" -ForegroundColor Cyan
 Write-Host " SEM INSTALACAO | SEM SELENIUM | SEM ACTIONS" -ForegroundColor Cyan
 Write-Host "===================================================" -ForegroundColor Cyan
