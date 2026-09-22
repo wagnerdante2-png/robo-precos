@@ -337,3 +337,20 @@ processando o redirect da tela anterior.
 
 O preenchimento de e-mail, senha e confirmacao continua igual ao fluxo
 que ja havia funcionado.
+
+
+## Viewport interno do visual Desconto por Motivo
+
+Na v0.5.3 a coleta nao tenta mais rolar o dashboard nem inferir a barra pelo grid inteiro.
+
+O RoboPrecos:
+- identifica o visual DESCONTO POR MOTIVO;
+- restringe a busca de scrollbars ao interior desse visual;
+- procura o viewport vertical real por scrollHeight/clientHeight, geometria na borda direita e role=scrollbar/aria-controls;
+- percorre diretamente esse viewport do topo ao fundo;
+- usa sobreposicao entre janelas;
+- faz passada reversa;
+- identifica cada linha pela coluna EMPRESA;
+- reconcilia a soma final com o Total do Power BI.
+
+O bloco de login foi mantido byte a byte durante esta alteracao.
