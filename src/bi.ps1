@@ -737,6 +737,42 @@ function Invoke-RoboPrecosBiLoginStep {
     return ("WAITING:" + $kind)
 }
 
+function Wait-RoboPrecosBiLoginStateChange {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [Parameter(Mandatory = $true)][string]$PreviousKind,
+        [int]$TimeoutSeconds = 25
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $last = $null
+
+    do {
+        Start-Sleep -Milliseconds 350
+
+        try {
+            $last = Get-RoboPrecosBiPageState -Socket $Socket
+        }
+        catch {
+            $last = $null
+        }
+
+        if ($last) {
+            $kind = [string]$last.kind
+
+            if ($kind -eq "AUTHENTICATED") {
+                return $last
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($kind) -and $kind -ne $PreviousKind) {
+                return $last
+            }
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    return $last
+}
+
 function Invoke-RoboPrecosBiLogin {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
@@ -771,6 +807,38 @@ function Invoke-RoboPrecosBiLogin {
             }
 
             Write-RoboLog ("Power BI login: " + $action)
+
+            # Depois de clicar Enviar/Entrar/Sim, nunca repete a mesma acao
+            # enquanto a pagina ainda estiver concluindo o redirect.
+            if ($action -match 'SUBMITTED|CONFIRMED|SELECTED') {
+                $transition = Wait-RoboPrecosBiLoginStateChange -Socket $Socket -PreviousKind $kind -TimeoutSeconds 25
+
+                if ($transition) {
+                    $transitionKind = [string]$transition.kind
+                    Write-RoboLog (
+                        "Transicao login Power BI: " + $kind +
+                        " -> " + $transitionKind +
+                        " | " + [string]$transition.href
+                    )
+
+                    if ($transitionKind -eq "AUTHENTICATED") {
+                        Write-RoboLog ("Sessao Power BI autenticada de fato. URL: " + [string]$transition.href)
+                        return
+                    }
+
+                    if ($transitionKind -ne $kind) {
+                        $lastKind = ""
+                        continue
+                    }
+                }
+
+                throw (
+                    "Power BI nao mudou de tela apos a acao " + $action +
+                    " no estado " + $kind +
+                    ". O robo nao repetiu o clique para evitar dupla submissao."
+                )
+            }
+
             Start-Sleep -Milliseconds 900
             continue
         }
