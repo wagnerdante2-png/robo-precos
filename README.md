@@ -294,3 +294,23 @@ O RoboPrecos:
 
 A reconciliacao com o Total do BI continua sendo a aprovacao final.
 Login e navegacao permanecem congelados.
+
+
+## Scroll nativo da tabela Power BI
+
+Na v0.5.0, a coleta do visual deixa de depender de `scrollTop` de containers inferidos.
+
+O RoboPrecos posiciona o ponteiro sobre o grid e usa eventos nativos do Chrome DevTools:
+
+`Input.dispatchMouseEvent(type=mouseWheel)`
+
+Fluxo:
+
+1. captura as empresas atualmente materializadas;
+2. rola nativamente ate uma extremidade da barra interna;
+3. percorre a tabela em passos, capturando as empresas visiveis;
+4. une as linhas pelo numero da coluna EMPRESA;
+5. faz uma passada reversa por seguranca;
+6. reconcilia Quantidade Cupons e Desconto com o Total do visual.
+
+A ordem do visual nao importa. A coluna EMPRESA e a chave de identificacao da loja.
