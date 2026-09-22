@@ -261,3 +261,17 @@ A unica alteracao esta na transicao entre autenticacao concluida e abertura do r
 - existe uma unica tentativa final por `window.location.replace` se o redirect anterior cancelar a navegacao.
 
 Nenhuma credencial, etapa de login ou regra de coleta foi alterada.
+
+
+## Espera de materializacao do visual
+
+Na v0.4.8, depois que o texto do relatorio aparece, o RoboPrecos nao assume que a tabela ja esta pronta.
+
+A leitura do visual tenta por ate 45 segundos:
+
+- grid/tabela via DOM;
+- linhas via arvore de acessibilidade do Chrome.
+
+A primeira tentativa vazia nao e mais tratada como falha.
+
+Login, credenciais e navegacao permanecem congelados no fluxo ja validado.
