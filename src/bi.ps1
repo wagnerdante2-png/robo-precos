@@ -303,6 +303,137 @@ function Get-RoboPrecosBiPageState {
     return Invoke-CdpJsonExpression -Socket $Socket -Expression $expression
 }
 
+function Get-RoboPrecosBiAxLoginNode {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [string[]]$Roles = @(),
+        [string[]]$Labels = @(),
+        [switch]$AllowFirstRoleMatch
+    )
+
+    [void](Invoke-CdpCommand -Socket $Socket -Method "Accessibility.enable")
+    $tree = Invoke-CdpCommand -Socket $Socket -Method "Accessibility.getFullAXTree"
+
+    if (-not $tree -or -not ($tree.PSObject.Properties.Name -contains "nodes")) {
+        return $null
+    }
+
+    $normalizedRoles = @($Roles | ForEach-Object { ConvertTo-RoboPrecosNormalizedText $_ })
+    $normalizedLabels = @($Labels | ForEach-Object { ConvertTo-RoboPrecosNormalizedText $_ })
+    $fallback = $null
+
+    foreach ($node in @($tree.nodes)) {
+        $ignoredProperty = $node.PSObject.Properties["ignored"]
+        if ($ignoredProperty -and [bool]$ignoredProperty.Value) {
+            continue
+        }
+
+        $backendProperty = $node.PSObject.Properties["backendDOMNodeId"]
+        if (-not $backendProperty) {
+            continue
+        }
+
+        $role = ConvertTo-RoboPrecosNormalizedText (Get-RoboPrecosBiAxPropertyValue -Node $node -PropertyName "role")
+        if ($normalizedRoles.Count -gt 0 -and $normalizedRoles -notcontains $role) {
+            continue
+        }
+
+        if (-not $fallback) {
+            $fallback = $node
+        }
+
+        $parts = @(
+            Get-RoboPrecosBiAxPropertyValue -Node $node -PropertyName "name",
+            Get-RoboPrecosBiAxPropertyValue -Node $node -PropertyName "value",
+            Get-RoboPrecosBiAxPropertyValue -Node $node -PropertyName "description"
+        )
+        $searchText = ConvertTo-RoboPrecosNormalizedText ($parts -join " ")
+
+        foreach ($label in $normalizedLabels) {
+            if (-not [string]::IsNullOrWhiteSpace($label) -and $searchText.Contains($label)) {
+                return $node
+            }
+        }
+    }
+
+    if ($AllowFirstRoleMatch) {
+        return $fallback
+    }
+
+    return $null
+}
+
+function Focus-RoboPrecosBiAxNode {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [Parameter(Mandatory = $true)]$Node
+    )
+
+    $backendProperty = $Node.PSObject.Properties["backendDOMNodeId"]
+    if (-not $backendProperty) {
+        throw "No acessivel do Power BI nao possui backendDOMNodeId."
+    }
+
+    [void](Invoke-CdpCommand -Socket $Socket -Method "DOM.enable")
+    [void](Invoke-CdpCommand -Socket $Socket -Method "DOM.focus" -Params @{
+        backendNodeId = [int]$backendProperty.Value
+    })
+}
+
+function Set-RoboPrecosBiFocusedText {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+
+    # Ctrl+A
+    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
+        type = "keyDown"; key = "a"; code = "KeyA"; modifiers = 2
+    })
+    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
+        type = "keyUp"; key = "a"; code = "KeyA"; modifiers = 2
+    })
+
+    # Backspace
+    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
+        type = "keyDown"; key = "Backspace"; code = "Backspace"; windowsVirtualKeyCode = 8
+    })
+    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
+        type = "keyUp"; key = "Backspace"; code = "Backspace"; windowsVirtualKeyCode = 8
+    })
+
+    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.insertText" -Params @{
+        text = $Text
+    })
+}
+
+function Press-RoboPrecosBiEnter {
+    param([System.Net.WebSockets.ClientWebSocket]$Socket)
+
+    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
+        type = "keyDown"; key = "Enter"; code = "Enter"; windowsVirtualKeyCode = 13
+    })
+    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
+        type = "keyUp"; key = "Enter"; code = "Enter"; windowsVirtualKeyCode = 13
+    })
+}
+
+function Invoke-RoboPrecosBiAxButton {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [Parameter(Mandatory = $true)][string[]]$Labels
+    )
+
+    $button = Get-RoboPrecosBiAxLoginNode -Socket $Socket -Roles @("button") -Labels $Labels
+    if (-not $button) {
+        return $false
+    }
+
+    Focus-RoboPrecosBiAxNode -Socket $Socket -Node $button
+    Press-RoboPrecosBiEnter -Socket $Socket
+    return $true
+}
+
 function Invoke-RoboPrecosBiLoginStep {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
@@ -310,122 +441,80 @@ function Invoke-RoboPrecosBiLoginStep {
         [Parameter(Mandatory = $true)]$Credential
     )
 
-    $usernameJson = ([string]$Credential.Username | ConvertTo-Json -Compress)
-    $passwordJson = ([string]$Credential.Password | ConvertTo-Json -Compress)
-    $kindJson = ([string]$State.kind | ConvertTo-Json -Compress)
+    $kind = [string]$State.kind
 
-    $expression = @"
-(async () => {
-  const kind = $kindJson;
-  const user = $usernameJson;
-  const pass = $passwordJson;
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const norm = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
-  const visible = e => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+    if ($kind -eq "POWERBI_EMAIL") {
+        $email = Get-RoboPrecosBiAxLoginNode -Socket $Socket -Roles @("textbox") -Labels @("EMAIL","ENDERECO DE EMAIL") -AllowFirstRoleMatch
+        if (-not $email) {
+            return "ERROR:POWERBI_EMAIL_INPUT_NOT_FOUND_AX"
+        }
 
-  const setValue = (el, value) => {
-    if (!el) return false;
-    const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLElement.prototype;
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (desc && desc.set) desc.set.call(el, value); else el.value = value;
-    el.dispatchEvent(new Event('input', {bubbles:true}));
-    el.dispatchEvent(new Event('change', {bubbles:true}));
-    return true;
-  };
+        Focus-RoboPrecosBiAxNode -Socket $Socket -Node $email
+        Set-RoboPrecosBiFocusedText -Socket $Socket -Text ([string]$Credential.Username)
+        Start-Sleep -Milliseconds 250
 
-  const click = el => {
-    if (!el || !visible(el)) return false;
-    el.click();
-    return true;
-  };
+        if (-not (Invoke-RoboPrecosBiAxButton -Socket $Socket -Labels @("ENVIAR","SUBMIT","CONTINUAR","CONTINUE"))) {
+            # O formulario tambem aceita ENTER no campo de email.
+            Focus-RoboPrecosBiAxNode -Socket $Socket -Node $email
+            Press-RoboPrecosBiEnter -Socket $Socket
+        }
 
-  const controls = () => [...document.querySelectorAll('button,input[type="submit"],input[type="button"],a')].filter(visible);
-
-  if (kind === 'POWERBI_EMAIL') {
-    const inputs = [...document.querySelectorAll('input')].filter(visible);
-    const email = inputs.find(e => {
-      const t = (e.type || '').toLowerCase();
-      const p = norm(e.getAttribute('placeholder') || '');
-      const n = (e.name || '').toLowerCase();
-      return t === 'email' || t === 'text' || t === '' || n.includes('email') || p.includes('email');
-    });
-    if (!email) return 'ERROR:POWERBI_EMAIL_INPUT_NOT_FOUND';
-
-    setValue(email, user);
-    await sleep(200);
-
-    const send = controls().find(e => {
-      const t = norm(e.innerText || e.value || e.textContent);
-      return t === 'enviar' || t === 'submit' || t === 'continuar' || t === 'continue';
-    }) || document.querySelector('button[type="submit"],input[type="submit"]');
-
-    if (!click(send)) return 'ERROR:POWERBI_EMAIL_SUBMIT_NOT_FOUND';
-    return 'POWERBI_EMAIL_SUBMITTED';
-  }
-
-  if (kind === 'MICROSOFT_EMAIL') {
-    const inputs = [...document.querySelectorAll('input')].filter(visible);
-    const email = inputs.find(e => {
-      const t = (e.type || '').toLowerCase();
-      const n = (e.name || '').toLowerCase();
-      return t === 'email' || n === 'loginfmt' || t === 'text';
-    });
-
-    if (email) {
-      setValue(email, user);
-      await sleep(200);
+        return "POWERBI_EMAIL_SUBMITTED_AX"
     }
 
-    const account = [...document.querySelectorAll('[data-test-id],div,button,a')].find(e =>
-      visible(e) && norm(e.innerText || e.textContent) === norm(user)
-    );
-    if (account && !email) {
-      click(account);
-      return 'MICROSOFT_ACCOUNT_SELECTED';
+    if ($kind -eq "MICROSOFT_EMAIL") {
+        $email = Get-RoboPrecosBiAxLoginNode -Socket $Socket -Roles @("textbox") -Labels @("EMAIL","CONTA","USUARIO") -AllowFirstRoleMatch
+
+        if ($email) {
+            Focus-RoboPrecosBiAxNode -Socket $Socket -Node $email
+            Set-RoboPrecosBiFocusedText -Socket $Socket -Text ([string]$Credential.Username)
+            Start-Sleep -Milliseconds 250
+
+            if (-not (Invoke-RoboPrecosBiAxButton -Socket $Socket -Labels @("AVANCAR","PROXIMO","NEXT","ENTRAR","SIGN IN"))) {
+                Focus-RoboPrecosBiAxNode -Socket $Socket -Node $email
+                Press-RoboPrecosBiEnter -Socket $Socket
+            }
+
+            return "MICROSOFT_EMAIL_SUBMITTED_AX"
+        }
+
+        $account = Get-RoboPrecosBiAxLoginNode -Socket $Socket -Roles @("button","link","listitem") -Labels @([string]$Credential.Username)
+        if ($account) {
+            Focus-RoboPrecosBiAxNode -Socket $Socket -Node $account
+            Press-RoboPrecosBiEnter -Socket $Socket
+            return "MICROSOFT_ACCOUNT_SELECTED_AX"
+        }
+
+        return "ERROR:MICROSOFT_EMAIL_CONTROL_NOT_FOUND_AX"
     }
 
-    const next = document.querySelector('#idSIButton9') || controls().find(e => {
-      const t = norm(e.innerText || e.value || e.textContent);
-      return t === 'avancar' || t === 'proximo' || t === 'next' || t === 'entrar' || t === 'sign in';
-    });
+    if ($kind -eq "MICROSOFT_PASSWORD") {
+        $password = Get-RoboPrecosBiAxLoginNode -Socket $Socket -Roles @("textbox") -Labels @("SENHA","PASSWORD") -AllowFirstRoleMatch
+        if (-not $password) {
+            return "ERROR:MICROSOFT_PASSWORD_INPUT_NOT_FOUND_AX"
+        }
 
-    if (!click(next)) return 'ERROR:MICROSOFT_EMAIL_NEXT_NOT_FOUND';
-    return 'MICROSOFT_EMAIL_SUBMITTED';
-  }
+        Focus-RoboPrecosBiAxNode -Socket $Socket -Node $password
+        Set-RoboPrecosBiFocusedText -Socket $Socket -Text ([string]$Credential.Password)
+        Start-Sleep -Milliseconds 250
 
-  if (kind === 'MICROSOFT_PASSWORD') {
-    const password = [...document.querySelectorAll('input')].find(e =>
-      visible(e) && ((e.type || '').toLowerCase() === 'password' || (e.name || '').toLowerCase() === 'passwd')
-    );
-    if (!password) return 'ERROR:MICROSOFT_PASSWORD_INPUT_NOT_FOUND';
+        if (-not (Invoke-RoboPrecosBiAxButton -Socket $Socket -Labels @("ENTRAR","SIGN IN","CONTINUAR","CONTINUE"))) {
+            Focus-RoboPrecosBiAxNode -Socket $Socket -Node $password
+            Press-RoboPrecosBiEnter -Socket $Socket
+        }
 
-    setValue(password, pass);
-    await sleep(200);
+        return "MICROSOFT_PASSWORD_SUBMITTED_AX"
+    }
 
-    const enter = document.querySelector('#idSIButton9') || controls().find(e => {
-      const t = norm(e.innerText || e.value || e.textContent);
-      return t === 'entrar' || t === 'sign in' || t === 'continuar' || t === 'continue';
-    });
+    if ($kind -eq "MICROSOFT_STAY") {
+        if (Invoke-RoboPrecosBiAxButton -Socket $Socket -Labels @("SIM","YES","CONTINUAR","CONTINUE")) {
+            return "MICROSOFT_STAY_CONFIRMED_AX"
+        }
 
-    if (!click(enter)) return 'ERROR:MICROSOFT_PASSWORD_SUBMIT_NOT_FOUND';
-    return 'MICROSOFT_PASSWORD_SUBMITTED';
-  }
+        return "ERROR:MICROSOFT_STAY_YES_NOT_FOUND_AX"
+    }
 
-  if (kind === 'MICROSOFT_STAY') {
-    const yes = document.querySelector('#idSIButton9') || controls().find(e => {
-      const t = norm(e.innerText || e.value || e.textContent);
-      return t === 'sim' || t === 'yes' || t === 'continuar' || t === 'continue';
-    });
-
-    if (!click(yes)) return 'ERROR:MICROSOFT_STAY_YES_NOT_FOUND';
-    return 'MICROSOFT_STAY_CONFIRMED';
-  }
-
-  return 'WAITING:' + kind;
-})()
-"@
-
-    return [string](Invoke-CdpExpression -Socket $Socket -Expression $expression)
+    return ("WAITING:" + $kind)
 }
 
 function Invoke-RoboPrecosBiLogin {
