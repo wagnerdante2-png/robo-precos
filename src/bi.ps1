@@ -1466,17 +1466,32 @@ function Get-RoboPrecosBiGridRows {
   };
 
   const results = [];
+  const union = new Map();
+  let unionStable = 0;
+  let lastUnionCount = -1;
 
-  // Testa candidatos um por um. Mantemos todos os diagnosticos e escolhemos
-  // aquele que realmente materializou mais empresas.
-  for (let i=0; i<pool.length && i<35; i++) {
+  // Testa candidatos um por um e UNE tudo que cada scroll conseguiu
+  // materializar. Nao existe quantidade fixa de lojas aqui.
+  for (let i=0; i<pool.length && i<24; i++) {
     const result = await sweep(pool[i]);
     results.push(result);
 
-    // Para a rede atual, 60 empresas + Total ja e uma coleta completa.
-    // Ainda assim nao hardcodamos a aprovacao final: a reconciliacao no PowerShell
-    // continua comparando a soma com o Total do BI.
-    if (result.dataRows >= 60 && result.hasTotal) {
+    for (const values of result.rows) {
+      const key = values.join('\u001f');
+      union.set(key, values);
+    }
+
+    const unionRows = [...union.values()];
+    const unionDataRows = countDataRows(unionRows);
+
+    if (unionDataRows === lastUnionCount) unionStable++;
+    else unionStable = 0;
+
+    lastUnionCount = unionDataRows;
+
+    // Se varios candidatos consecutivos nao acrescentarem nenhuma empresa
+    // e o Total ja tiver sido materializado, os demais scrolls sao redundantes.
+    if (unionStable >= 7 && hasTotalRow(unionRows)) {
       break;
     }
   }
@@ -1487,9 +1502,12 @@ function Get-RoboPrecosBiGridRows {
     return b.rows.length - a.rows.length;
   });
 
+  const unionRows = [...union.values()];
+  const unionDataRows = countDataRows(unionRows);
+  const unionHasTotal = hasTotalRow(unionRows);
   const best = results[0];
 
-  if (!best || best.dataRows <= 0) {
+  if (unionDataRows <= 0) {
     return {
       ok:false,
       message:'GRID_ROWS_NOT_MATERIALIZED',
@@ -1508,10 +1526,11 @@ function Get-RoboPrecosBiGridRows {
   return {
     ok:true,
     score:candidates[0].score,
-    rows:best.rows,
-    dataRows:best.dataRows,
-    hasTotal:best.hasTotal,
-    scroller:best.label,
+    rows:unionRows,
+    dataRows:unionDataRows,
+    hasTotal:unionHasTotal,
+    scroller:best ? best.label : 'UNION',
+    candidatesTested:results.length,
     diagnostics:results.slice(0,10).map(x => ({
       label:x.label,
       dataRows:x.dataRows,
