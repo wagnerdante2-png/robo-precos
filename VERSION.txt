@@ -1,11 +1,14 @@
-RoboPrecos Portable v0.3
+RoboPrecos Portable v0.4
 Build: 2026-09-22
-Coleta PDA por loja ou rede inteira
-Gravacao nas abas ETIQUETAS, DIVERGENCIAS e SEM PRECO
-Planilha operacional mantida na raiz do pacote / Plataforma RPA
-Migracao automatica de copia legada encontrada em Downloads
-Recalculo completo antes da leitura das whitelists
-Mes localizado dinamicamente pela linha 2
-Loja localizada dinamicamente pela coluna B
-Backup local antes da gravacao
+Fluxo integrado PDA + Power BI
+Power BI sem exportacao intermediaria
+Mes atual: Resumo / Desconto por Motivo
+Mes fechado: Descontos Mes Anterior
+Somente motivo PRECO ERRADO
+Campos: Quantidade Cupons + Desconto
+Ausencia de loja/campo nao vira zero
+Gravacao seletiva somente de registros validos
+Modo de teste Power BI sem gravacao
+Planilha operacional na raiz da Plataforma RPA
+Backup antes de cada etapa de gravacao
 Sem instalacao | Sem Python | Sem Selenium | Sem GitHub Actions
