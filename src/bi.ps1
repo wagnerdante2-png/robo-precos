@@ -261,25 +261,33 @@ function Get-RoboPrecosBiPageState {
   ))) {
     kind = 'POWERBI_EMAIL';
   }
-  else if (microsoft && password) {
-    kind = 'MICROSOFT_PASSWORD';
-  }
-  else if (microsoft && (email || genericText) && (
-      text.includes('entrar') ||
-      text.includes('sign in') ||
-      text.includes('email') ||
-      text.includes('conta')
+  else if (microsoft && (
+      !!password ||
+      text.includes('insira a senha') ||
+      text.includes('digite a senha') ||
+      text.includes('enter password') ||
+      text.includes('password')
   )) {
-    kind = 'MICROSOFT_EMAIL';
+    kind = 'MICROSOFT_PASSWORD';
   }
   else if (microsoft && (
       text.includes('continuar conectado') ||
       text.includes('permanecer conectado') ||
       text.includes('manter conectado') ||
-      text.includes('stay signed in') ||
-      !!document.querySelector('#idSIButton9')
+      text.includes('stay signed in')
   )) {
     kind = 'MICROSOFT_STAY';
+  }
+  else if (microsoft && (
+      !!email ||
+      !!genericText ||
+      text.includes('insira seu email') ||
+      text.includes('insira seu e-mail') ||
+      text.includes('enter email') ||
+      text.includes('entrar em sua conta') ||
+      text.includes('sign in')
+  )) {
+    kind = 'MICROSOFT_EMAIL';
   }
   else if (powerbi && !singleSignOn) {
     kind = 'AUTHENTICATED';
