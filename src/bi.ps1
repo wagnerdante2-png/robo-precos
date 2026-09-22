@@ -1221,99 +1221,310 @@ function Get-RoboPrecosBiGridRows {
   const reqN = (required || []).map(norm);
 
   const allGrids = [...document.querySelectorAll('[role="grid"],[role="table"]')];
+
   const candidates = allGrids.map(grid => {
     let node = grid;
     let context = '';
-    for (let i=0; i<7 && node; i++, node=node.parentElement) {
+
+    for (let i=0; i<9 && node; i++, node=node.parentElement) {
       const text = norm(node.innerText || node.textContent);
-      if (text.length > context.length && text.length < 120000) context = text;
+      if (text.length > context.length && text.length < 160000) context = text;
     }
+
     const own = norm(grid.innerText || grid.textContent);
     let score = reqN.filter(h => own.includes(h) || context.includes(h)).length * 10;
     if (titleN && context.includes(titleN)) score += 100;
+
     return {grid, score, context};
   }).sort((a,b) => b.score-a.score);
 
   if (!candidates.length || candidates[0].score < Math.max(10, reqN.length * 5)) {
-    return { ok:false, message:'GRID_NOT_FOUND', grids:allGrids.length, rows:[] };
+    return {
+      ok:false,
+      message:'GRID_NOT_FOUND',
+      grids:allGrids.length,
+      rows:[],
+      diagnostics:[]
+    };
   }
 
   const grid = candidates[0].grid;
+
   let visual = grid;
   if (titleN) {
     let node = grid;
-    for (let i=0; i<7 && node; i++, node=node.parentElement) {
+
+    for (let i=0; i<10 && node; i++, node=node.parentElement) {
       if (norm(node.innerText || node.textContent).includes(titleN)) {
         visual = node;
       }
     }
   }
 
-  const scrollCandidates = [visual, grid, ...visual.querySelectorAll('*')].filter(e => {
-    try {
-      const style = getComputedStyle(e);
-      return e.scrollHeight > e.clientHeight + 20 &&
-        e.clientHeight > 50 &&
-        (style.overflowY === 'auto' || style.overflowY === 'scroll' || e.getAttribute('role') === 'grid');
-    } catch { return false; }
-  }).sort((a,b) => (b.scrollHeight-b.clientHeight)-(a.scrollHeight-a.clientHeight));
-
-  const scroller = scrollCandidates[0] || grid;
-  const found = new Map();
-
-  const capture = () => {
+  const captureRows = (store) => {
     const rows = [...grid.querySelectorAll('[role="row"]')];
+
     for (const row of rows) {
-      let cells = [...row.querySelectorAll('[role="columnheader"],[role="gridcell"],[role="rowheader"]')];
-      let values = cells.map(c => (c.innerText || c.textContent || '').replace(/\s+/g,' ').trim());
+      let cells = [...row.querySelectorAll(
+        '[role="columnheader"],[role="gridcell"],[role="rowheader"]'
+      )];
+
+      let values = cells.map(c =>
+        (c.innerText || c.textContent || '').replace(/\s+/g,' ').trim()
+      );
 
       if (!values.length) {
-        values = (row.innerText || '').split(/\r?\n|\t/).map(s => s.trim()).filter(Boolean);
+        values = (row.innerText || '')
+          .split(/\r?\n|\t/)
+          .map(s => s.trim());
       }
 
       if (!values.length) continue;
+
       const key = values.join('\u001f');
-      found.set(key, values);
+      store.set(key, values);
     }
   };
 
-  const oldTop = scroller.scrollTop || 0;
-  scroller.scrollTop = 0;
-  await sleep(300);
-  capture();
+  const countDataRows = rows => rows.filter(values =>
+    values &&
+    values.length &&
+    /^\d+$/.test(String(values[0] || '').trim())
+  ).length;
 
-  let last = -1;
-  let guard = 0;
-  while (guard++ < 250) {
-    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-    const now = scroller.scrollTop || 0;
-    if (now >= max - 2) break;
+  const hasTotalRow = rows => rows.some(values =>
+    values &&
+    values.length &&
+    norm(String(values[0] || '')) === 'TOTAL'
+  );
 
-    const step = Math.max(120, Math.floor(scroller.clientHeight * 0.80));
-    scroller.scrollTop = Math.min(max, now + step);
-    await sleep(180);
-    capture();
+  // O Power BI pode colocar o scroll real em um ancestral, no proprio grid
+  // ou em um descendente interno. Testamos todos os candidatos plausiveis.
+  const pool = [];
+  const seen = new Set();
 
-    const moved = scroller.scrollTop || 0;
-    if (moved === last || moved === now) break;
-    last = moved;
+  const addCandidate = (el, label) => {
+    if (!el || seen.has(el)) return;
+    seen.add(el);
+
+    try {
+      const r = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      const sh = Number(el.scrollHeight || 0);
+      const ch = Number(el.clientHeight || 0);
+
+      const plausible =
+        sh > ch + 5 ||
+        style.overflowY === 'auto' ||
+        style.overflowY === 'scroll' ||
+        style.overflowY === 'hidden' ||
+        el.getAttribute('role') === 'grid';
+
+      if (!plausible) return;
+      if (ch < 20 || r.width < 40) return;
+
+      pool.push({
+        el,
+        label,
+        initialTop:Number(el.scrollTop || 0),
+        initialHeight:sh,
+        initialClient:ch
+      });
+    } catch {}
+  };
+
+  addCandidate(grid, 'GRID');
+
+  let ancestor = grid.parentElement;
+  for (let i=0; i<12 && ancestor; i++, ancestor=ancestor.parentElement) {
+    addCandidate(ancestor, 'ANCESTOR_' + i);
   }
 
-  capture();
-  scroller.scrollTop = oldTop;
+  for (const el of visual.querySelectorAll('*')) {
+    addCandidate(el, 'DESCENDANT');
+  }
+
+  // Garante que o grid puro tambem seja testado mesmo se nao parecer scrollavel.
+  if (!pool.some(x => x.el === grid)) {
+    pool.push({
+      el:grid,
+      label:'GRID_FORCED',
+      initialTop:Number(grid.scrollTop || 0),
+      initialHeight:Number(grid.scrollHeight || 0),
+      initialClient:Number(grid.clientHeight || 0)
+    });
+  }
+
+  const sweep = async item => {
+    const el = item.el;
+    const found = new Map();
+    let stagnant = 0;
+    let lastCount = -1;
+    let iterations = 0;
+
+    const capture = () => {
+      captureRows(found);
+      const count = countDataRows([...found.values()]);
+      if (count === lastCount) stagnant++;
+      else stagnant = 0;
+      lastCount = count;
+    };
+
+    try {
+      el.scrollTop = 0;
+      el.dispatchEvent(new Event('scroll', {bubbles:true}));
+      await sleep(300);
+      capture();
+
+      // Primeiro percorre progressivamente. O scrollHeight de tabelas
+      // virtualizadas pode crescer enquanto novas linhas sao materializadas.
+      while (iterations++ < 160) {
+        const ch = Math.max(1, Number(el.clientHeight || 1));
+        const sh = Math.max(ch, Number(el.scrollHeight || ch));
+        const max = Math.max(0, sh - ch);
+        const now = Number(el.scrollTop || 0);
+
+        if (max <= 2) break;
+
+        const step = Math.max(80, Math.floor(ch * 0.55));
+        const next = Math.min(max, now + step);
+
+        if (next <= now + 1) {
+          if (now >= max - 2) break;
+          stagnant++;
+        } else {
+          el.scrollTop = next;
+          el.dispatchEvent(new Event('scroll', {bubbles:true}));
+          el.dispatchEvent(new WheelEvent('wheel', {
+            bubbles:true,
+            cancelable:true,
+            deltaY:step,
+            deltaMode:0
+          }));
+          await sleep(220);
+          capture();
+        }
+
+        const newMax = Math.max(0, Number(el.scrollHeight || ch) - Number(el.clientHeight || ch));
+        const newTop = Number(el.scrollTop || 0);
+
+        if (newTop >= newMax - 2 && stagnant >= 3) break;
+        if (stagnant >= 10) break;
+      }
+
+      // Segunda passagem por percentuais. Isso cobre grids que reciclam as linhas
+      // e nao respondem bem ao incremento linear.
+      const percentages = [
+        0,0.05,0.10,0.15,0.20,0.25,0.30,0.35,0.40,0.45,
+        0.50,0.55,0.60,0.65,0.70,0.75,0.80,0.85,0.90,0.95,1
+      ];
+
+      for (const pct of percentages) {
+        const ch = Math.max(1, Number(el.clientHeight || 1));
+        const sh = Math.max(ch, Number(el.scrollHeight || ch));
+        const max = Math.max(0, sh - ch);
+
+        if (max <= 2) break;
+
+        el.scrollTop = Math.round(max * pct);
+        el.dispatchEvent(new Event('scroll', {bubbles:true}));
+        await sleep(180);
+        capture();
+      }
+
+      // Forca uma ultima ida ao fundo para materializar o Total.
+      const ch = Math.max(1, Number(el.clientHeight || 1));
+      const sh = Math.max(ch, Number(el.scrollHeight || ch));
+      const max = Math.max(0, sh - ch);
+
+      if (max > 2) {
+        el.scrollTop = max;
+        el.dispatchEvent(new Event('scroll', {bubbles:true}));
+        await sleep(350);
+        capture();
+      }
+    }
+    catch {}
+
+    try {
+      el.scrollTop = item.initialTop;
+      el.dispatchEvent(new Event('scroll', {bubbles:true}));
+    } catch {}
+
+    const rows = [...found.values()];
+
+    return {
+      label:item.label,
+      rows,
+      dataRows:countDataRows(rows),
+      hasTotal:hasTotalRow(rows),
+      scrollHeight:Number(el.scrollHeight || 0),
+      clientHeight:Number(el.clientHeight || 0),
+      initialHeight:item.initialHeight,
+      initialClient:item.initialClient
+    };
+  };
+
+  const results = [];
+
+  // Testa candidatos um por um. Mantemos todos os diagnosticos e escolhemos
+  // aquele que realmente materializou mais empresas.
+  for (let i=0; i<pool.length && i<35; i++) {
+    const result = await sweep(pool[i]);
+    results.push(result);
+
+    // Para a rede atual, 60 empresas + Total ja e uma coleta completa.
+    // Ainda assim nao hardcodamos a aprovacao final: a reconciliacao no PowerShell
+    // continua comparando a soma com o Total do BI.
+    if (result.dataRows >= 60 && result.hasTotal) {
+      break;
+    }
+  }
+
+  results.sort((a,b) => {
+    if (b.dataRows !== a.dataRows) return b.dataRows - a.dataRows;
+    if (Number(b.hasTotal) !== Number(a.hasTotal)) return Number(b.hasTotal) - Number(a.hasTotal);
+    return b.rows.length - a.rows.length;
+  });
+
+  const best = results[0];
+
+  if (!best || best.dataRows <= 0) {
+    return {
+      ok:false,
+      message:'GRID_ROWS_NOT_MATERIALIZED',
+      grids:allGrids.length,
+      rows:[],
+      diagnostics:results.map(x => ({
+        label:x.label,
+        dataRows:x.dataRows,
+        hasTotal:x.hasTotal,
+        scrollHeight:x.scrollHeight,
+        clientHeight:x.clientHeight
+      }))
+    };
+  }
 
   return {
     ok:true,
     score:candidates[0].score,
-    scrollHeight:scroller.scrollHeight,
-    clientHeight:scroller.clientHeight,
-    rows:[...found.values()]
+    rows:best.rows,
+    dataRows:best.dataRows,
+    hasTotal:best.hasTotal,
+    scroller:best.label,
+    diagnostics:results.slice(0,10).map(x => ({
+      label:x.label,
+      dataRows:x.dataRows,
+      hasTotal:x.hasTotal,
+      scrollHeight:x.scrollHeight,
+      clientHeight:x.clientHeight
+    }))
   };
 })()
 "@
 
     $jsonExpression = "(async () => JSON.stringify(await (" + $expression + ")))()"
-    $deadline = (Get-Date).AddSeconds(45)
+    $deadline = (Get-Date).AddSeconds(60)
     $attempt = 0
     $lastResult = $null
     $lastAxCount = 0
@@ -1329,13 +1540,34 @@ function Get-RoboPrecosBiGridRows {
                 $lastResult = $result
 
                 if ($result -and [bool]$result.ok -and @($result.rows).Count -gt 0) {
-                    Write-RoboLog ("Tabela Power BI materializada via DOM na tentativa " + $attempt + " com " + @($result.rows).Count + " linha(s).")
+                    Write-RoboLog (
+                        "Tabela Power BI varrida via DOM. Tentativa " + $attempt +
+                        " | Scroller: " + [string]$result.scroller +
+                        " | Empresas materializadas: " + [string]$result.dataRows +
+                        " | Total capturado: " + [string]$result.hasTotal
+                    )
+
+                    if ($result.PSObject.Properties.Name -contains "diagnostics") {
+                        foreach ($diag in @($result.diagnostics | Select-Object -First 5)) {
+                            Write-RoboLog (
+                                "Scroller candidato " + [string]$diag.label +
+                                " -> empresas=" + [string]$diag.dataRows +
+                                " | total=" + [string]$diag.hasTotal +
+                                " | scroll=" + [string]$diag.scrollHeight +
+                                "/" + [string]$diag.clientHeight
+                            )
+                        }
+                    }
+
                     return @($result.rows)
                 }
             }
         }
         catch {
-            Write-RoboLog ("Leitura DOM Power BI ainda indisponivel na tentativa " + $attempt + ": " + $_.Exception.Message) "AVISO"
+            Write-RoboLog (
+                "Varredura DOM Power BI ainda indisponivel na tentativa " +
+                $attempt + ": " + $_.Exception.Message
+            ) "AVISO"
         }
 
         try {
@@ -1343,25 +1575,41 @@ function Get-RoboPrecosBiGridRows {
             $lastAxCount = $axRows.Count
 
             if ($axRows.Count -gt 0) {
-                Write-RoboLog ("Tabela Power BI materializada via Accessibility na tentativa " + $attempt + " com " + $axRows.Count + " linha(s).")
+                Write-RoboLog (
+                    "Tabela Power BI materializada via Accessibility na tentativa " +
+                    $attempt + " com " + $axRows.Count + " linha(s)."
+                )
                 return @($axRows)
             }
         }
         catch {
-            Write-RoboLog ("Accessibility Power BI ainda indisponivel na tentativa " + $attempt + ": " + $_.Exception.Message) "AVISO"
+            Write-RoboLog (
+                "Accessibility Power BI ainda indisponivel na tentativa " +
+                $attempt + ": " + $_.Exception.Message
+            ) "AVISO"
         }
 
         if ($attempt -eq 1) {
-            Write-RoboLog "Texto do relatorio ja apareceu, mas o grid ainda nao foi materializado. Aguardando o Power BI concluir o visual." "AVISO"
+            Write-RoboLog (
+                "Texto do relatorio ja apareceu, mas a grade completa ainda nao foi " +
+                "materializada. Aguardando o Power BI concluir o visual."
+            ) "AVISO"
         }
 
-        Start-Sleep -Milliseconds 750
+        Start-Sleep -Milliseconds 800
     } while ((Get-Date) -lt $deadline)
 
-    $detail = if ($lastResult) { ($lastResult | ConvertTo-Json -Compress -Depth 5) } else { "sem retorno DOM" }
+    $detail = if ($lastResult) {
+        ($lastResult | ConvertTo-Json -Compress -Depth 8)
+    } else {
+        "sem retorno DOM"
+    }
+
     throw (
-        "Power BI exibiu o relatorio, mas a tabela nao ficou disponivel ao Chrome em 45 segundos. " +
-        "Tentativas: " + $attempt + " | AX rows: " + $lastAxCount + " | Ultimo DOM: " + $detail
+        "Power BI exibiu o relatorio, mas a tabela completa nao ficou disponivel " +
+        "ao Chrome em 60 segundos. Tentativas: " + $attempt +
+        " | AX rows: " + $lastAxCount +
+        " | Ultimo DOM: " + $detail
     )
 }
 
