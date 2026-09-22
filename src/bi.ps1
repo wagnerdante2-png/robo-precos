@@ -454,6 +454,27 @@ function Find-RoboPrecosBiDomInput {
     return $null
 }
 
+function Wait-RoboPrecosBiDomInput {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [ValidateSet("EMAIL","PASSWORD")][string]$Kind,
+        [int]$TimeoutSeconds = 20
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+
+    do {
+        $inputNode = Find-RoboPrecosBiDomInput -Socket $Socket -Kind $Kind
+        if ($inputNode) {
+            return $inputNode
+        }
+
+        Start-Sleep -Milliseconds 300
+    } while ((Get-Date) -lt $deadline)
+
+    return $null
+}
+
 function Find-RoboPrecosBiDomButton {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
@@ -588,7 +609,7 @@ function Invoke-RoboPrecosBiLoginStep {
     $kind = [string]$State.kind
 
     if ($kind -eq "POWERBI_EMAIL") {
-        $email = Find-RoboPrecosBiDomInput -Socket $Socket -Kind "EMAIL"
+        $email = Wait-RoboPrecosBiDomInput -Socket $Socket -Kind "EMAIL" -TimeoutSeconds 20
         if (-not $email) {
             return "ERROR:POWERBI_EMAIL_INPUT_NOT_FOUND_FLAT_DOM"
         }
@@ -627,7 +648,7 @@ function Invoke-RoboPrecosBiLoginStep {
     }
 
     if ($kind -eq "MICROSOFT_PASSWORD") {
-        $password = Find-RoboPrecosBiDomInput -Socket $Socket -Kind "PASSWORD"
+        $password = Wait-RoboPrecosBiDomInput -Socket $Socket -Kind "PASSWORD" -TimeoutSeconds 20
         if (-not $password) {
             return "ERROR:MICROSOFT_PASSWORD_INPUT_NOT_FOUND_FLAT_DOM"
         }
