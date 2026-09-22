@@ -246,3 +246,18 @@ O modo 3 agora imprime todas as lojas coletadas, sem corte nas 15 primeiras, e m
 - Total do visual;
 - resultado da reconciliacao;
 - IDs de empresa ausentes dentro do intervalo encontrado.
+
+
+## Redirect pos-login tolerante
+
+Na v0.4.7 o login permanece congelado no fluxo ja validado.
+
+A unica alteracao esta na transicao entre autenticacao concluida e abertura do relatorio:
+
+- aguarda alguns segundos para o redirect automatico do Power BI terminar;
+- se o proprio Power BI ja chegar ao relatorio, nao envia nova navegacao;
+- se `Page.navigate` retornar `net::ERR_ABORTED` durante redirect SSO, o erro e tratado como transitorio;
+- o robo confirma a URL real do navegador antes de considerar falha;
+- existe uma unica tentativa final por `window.location.replace` se o redirect anterior cancelar a navegacao.
+
+Nenhuma credencial, etapa de login ou regra de coleta foi alterada.
