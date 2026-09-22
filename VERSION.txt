@@ -1,14 +1,12 @@
-RoboPrecos Portable v0.4.6
+RoboPrecos Portable v0.4.7
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
-Login Power BI direto em controles visiveis
+LOGIN CONGELADO no fluxo validado da v0.4.5/v0.4.6
+Correcao exclusiva da transicao pos-login para o relatorio
+ERR_ABORTED durante redirect SSO tratado como transitorio
+URL real do relatorio confirmada antes de falhar
 Mes corrente reconciliado com o Total do visual Power BI
-Soma Quantidade Cupons precisa bater com Total PRECO ERRADO
-Soma Desconto precisa bater com Total PRECO ERRADO
-Coleta corrente rejeitada se o Total nao reconciliar
 Modo 3 exibe TODAS as lojas coletadas
-Modo 3 lista IDs de empresa ausentes
-Snapshot CSV continua contendo a coleta completa
 Power BI sem exportacao intermediaria
 Mes atual: Resumo / Desconto por Motivo
 Mes fechado: Descontos Mes Anterior
