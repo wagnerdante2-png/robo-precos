@@ -1279,317 +1279,408 @@ function Get-RoboPrecosBiGridRows {
     $titleJson = ($TitleContains | ConvertTo-Json -Compress)
     $headersJson = ($RequiredHeaders | ConvertTo-Json -Compress)
 
-    $snapshotExpression = @"
-(() => {
+    $expression = @"
+(async () => {
   const title = $titleJson;
   const required = $headersJson;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
   const norm = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toUpperCase();
   const titleN = norm(title);
   const reqN = (required || []).map(norm);
 
-  const allGrids = [...document.querySelectorAll('[role="grid"],[role="table"]')];
+  const findGrid = () => {
+    const grids = [...document.querySelectorAll('[role="grid"],[role="table"]')];
 
-  const candidates = allGrids.map(grid => {
-    let node = grid;
-    let context = '';
+    const candidates = grids.map(grid => {
+      let node = grid;
+      let context = '';
 
-    for (let i=0; i<10 && node; i++, node=node.parentElement) {
-      const text = norm(node.innerText || node.textContent);
-      if (text.length > context.length && text.length < 180000) context = text;
-    }
+      for (let i=0; i<12 && node; i++, node=node.parentElement) {
+        const text = norm(node.innerText || node.textContent);
+        if (text.length > context.length && text.length < 220000) context = text;
+      }
 
-    const own = norm(grid.innerText || grid.textContent);
-    let score = reqN.filter(h => own.includes(h) || context.includes(h)).length * 10;
-    if (titleN && context.includes(titleN)) score += 100;
+      const own = norm(grid.innerText || grid.textContent);
+      let score = reqN.filter(h => own.includes(h) || context.includes(h)).length * 15;
+      if (titleN && context.includes(titleN)) score += 150;
 
-    return {grid, score};
-  }).sort((a,b) => b.score-a.score);
+      return {grid, score, context};
+    }).sort((a,b) => b.score-a.score);
 
-  if (!candidates.length || candidates[0].score < Math.max(10, reqN.length * 5)) {
+    return candidates.length ? candidates[0] : null;
+  };
+
+  const selected = findGrid();
+  if (!selected || selected.score < Math.max(15, reqN.length * 8)) {
     return JSON.stringify({
       ok:false,
       message:'GRID_NOT_FOUND',
-      grids:allGrids.length,
-      rows:[]
+      rows:[],
+      diagnostics:{}
     });
   }
 
-  const grid = candidates[0].grid;
-  const rect = grid.getBoundingClientRect();
+  let grid = selected.grid;
+  const gridRect = grid.getBoundingClientRect();
 
-  const rows = [...grid.querySelectorAll('[role="row"]')].map(row => {
-    let cells = [...row.querySelectorAll(
-      '[role="columnheader"],[role="gridcell"],[role="rowheader"]'
-    )];
+  // Localiza o menor ancestral que ainda represente o visual DESCONTO POR MOTIVO.
+  // Isso impede misturar as dezenas de scrollbars existentes no restante do dashboard.
+  let visual = grid.parentElement || grid;
+  let node = grid;
 
-    let values = cells.map(c =>
-      (c.innerText || c.textContent || '').replace(/\s+/g,' ').trim()
-    );
+  for (let i=0; i<14 && node; i++, node=node.parentElement) {
+    const text = norm(node.innerText || node.textContent);
+    if (!titleN || !text.includes(titleN)) continue;
 
-    if (!values.length) {
-      values = (row.innerText || '')
-        .split(/\r?\n|\t/)
-        .map(s => s.trim());
+    const r = node.getBoundingClientRect();
+    const areaRatio = Math.max(1, (r.width * r.height) / Math.max(1, gridRect.width * gridRect.height));
+
+    if (r.width >= gridRect.width * 0.85 && r.height >= gridRect.height * 0.85 && areaRatio < 12) {
+      visual = node;
+      break;
+    }
+  }
+
+  const rectOf = el => {
+    try { return el.getBoundingClientRect(); }
+    catch { return null; }
+  };
+
+  const visibleEnough = (el, r) => {
+    if (!r || r.width < 2 || r.height < 2) return false;
+    try {
+      const s = getComputedStyle(el);
+      return s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity || 1) > 0;
+    } catch {
+      return true;
+    }
+  };
+
+  const verticalOverlap = (a,b) => {
+    const top = Math.max(a.top,b.top);
+    const bottom = Math.min(a.bottom,b.bottom);
+    return Math.max(0,bottom-top);
+  };
+
+  const candidateMap = new Map();
+
+  const addScrollerCandidate = (el, reason, bonus=0) => {
+    if (!el || !(el instanceof Element)) return;
+
+    let target = el;
+
+    // Scrollbar ARIA pode controlar outro viewport.
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    const controls = el.getAttribute('aria-controls');
+
+    if (role === 'scrollbar' && controls) {
+      const controlled = document.getElementById(controls);
+      if (controlled) target = controlled;
     }
 
-    return values;
-  }).filter(values => values && values.length);
+    const r = rectOf(target);
+    if (!visibleEnough(target,r)) return;
 
-  const companies = rows
-    .map(v => String(v[0] || '').trim())
-    .filter(v => /^\d+$/.test(v));
+    const sh = Number(target.scrollHeight || 0);
+    const ch = Number(target.clientHeight || 0);
+    const range = sh - ch;
+
+    if (range <= 5 || ch < 20) return;
+
+    const gr = grid.getBoundingClientRect();
+    const overlap = verticalOverlap(r,gr);
+    const overlapRatio = overlap / Math.max(1,Math.min(r.height,gr.height));
+    const rightGap = Math.abs(r.right - gr.right);
+    const leftGap = Math.abs(r.left - gr.left);
+
+    let score = bonus;
+    score += Math.min(180, range / 3);
+    if (overlapRatio > 0.80) score += 120;
+    else if (overlapRatio > 0.45) score += 60;
+    if (rightGap <= 12) score += 160;
+    else if (rightGap <= 35) score += 100;
+    else if (rightGap <= 90) score += 40;
+    if (leftGap <= 20 && Math.abs(r.width-gr.width) <= 80) score += 80;
+    if (target.contains(grid) || grid.contains(target)) score += 60;
+
+    const style = getComputedStyle(target);
+    const oy = style.overflowY || '';
+    if (oy === 'auto' || oy === 'scroll') score += 140;
+    else if (oy === 'hidden') score += 30;
+
+    const previous = candidateMap.get(target);
+    const item = {
+      el:target,
+      reason,
+      score,
+      range,
+      sh,
+      ch,
+      rect:{left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height},
+      role,
+      overflowY:oy
+    };
+
+    if (!previous || item.score > previous.score) candidateMap.set(target,item);
+  };
+
+  // 1. Todos os elementos estritamente dentro do visual.
+  addScrollerCandidate(visual,'visual-root',20);
+  for (const el of visual.querySelectorAll('*')) {
+    addScrollerCandidate(el,'visual-descendant',0);
+  }
+
+  // 2. Elementos exatamente sob a borda direita da tabela.
+  // Para scrollbar nativa, elementFromPoint devolve o proprio viewport rolavel.
+  const currentGridRect = grid.getBoundingClientRect();
+  const sampleYs = [
+    currentGridRect.top + currentGridRect.height*0.25,
+    currentGridRect.top + currentGridRect.height*0.50,
+    currentGridRect.top + currentGridRect.height*0.75
+  ];
+  const sampleXs = [
+    currentGridRect.right - 3,
+    currentGridRect.right - 8,
+    currentGridRect.right - 14
+  ];
+
+  for (const x of sampleXs) {
+    for (const y of sampleYs) {
+      for (const hit of document.elementsFromPoint(x,y)) {
+        let h = hit;
+        for (let i=0;i<7 && h;i++,h=h.parentElement) {
+          if (visual.contains(h) || h === visual) addScrollerCandidate(h,'right-edge-hit',220);
+        }
+      }
+    }
+  }
+
+  // 3. Scrollbars ARIA do visual e respectivos aria-controls.
+  for (const sb of visual.querySelectorAll('[role="scrollbar"]')) {
+    const orientation = (sb.getAttribute('aria-orientation') || 'vertical').toLowerCase();
+    if (orientation === 'vertical') addScrollerCandidate(sb,'aria-scrollbar',300);
+  }
+
+  const scrollers = [...candidateMap.values()].sort((a,b)=>b.score-a.score);
+  const scrollerInfo = scrollers.slice(0,12).map(x=>({
+    reason:x.reason,
+    score:Math.round(x.score),
+    range:Math.round(x.range),
+    scrollHeight:x.sh,
+    clientHeight:x.ch,
+    overflowY:x.overflowY,
+    rect:x.rect
+  }));
+
+  const scroller = scrollers.length ? scrollers[0].el : null;
+
+  const rowsStore = new Map();
+
+  const capture = () => {
+    const current = findGrid();
+    if (current && current.grid) grid = current.grid;
+
+    const rows = [...grid.querySelectorAll('[role="row"]')];
+
+    for (const row of rows) {
+      let cells = [...row.querySelectorAll('[role="columnheader"],[role="gridcell"],[role="rowheader"]')];
+      let values = cells.map(c => (c.innerText || c.textContent || '').replace(/\s+/g,' ').trim());
+
+      if (!values.length) {
+        values = (row.innerText || '').split(/\r?\n|\t/).map(s=>s.trim());
+      }
+
+      if (!values.length) continue;
+      rowsStore.set(values.join('\u001f'),values);
+    }
+  };
+
+  const companies = () => [...rowsStore.values()]
+    .map(v=>String(v[0]||'').trim())
+    .filter(v=>/^\d+$/.test(v));
+
+  const signature = () => companies().sort((a,b)=>Number(a)-Number(b)).join(',');
+
+  capture();
+
+  if (!scroller) {
+    return JSON.stringify({
+      ok:false,
+      message:'VISUAL_SCROLL_CONTAINER_NOT_FOUND',
+      rows:[...rowsStore.values()],
+      companies:[...new Set(companies())],
+      diagnostics:{visualRect:rectOf(visual),gridRect:rectOf(grid),scrollers:scrollerInfo}
+    });
+  }
+
+  const originalTop = Number(scroller.scrollTop || 0);
+  const maxScroll = () => Math.max(0, Number(scroller.scrollHeight||0)-Number(scroller.clientHeight||0));
+
+  const setTop = async value => {
+    const max = maxScroll();
+    const top = Math.max(0,Math.min(max,Math.round(value)));
+
+    scroller.scrollTop = top;
+    scroller.dispatchEvent(new Event('scroll',{bubbles:true}));
+    await sleep(320);
+    capture();
+    return Number(scroller.scrollTop||0);
+  };
+
+  // Vai ao topo real do viewport interno.
+  await setTop(0);
+  await sleep(220);
+  capture();
+
+  let previousSignature = '';
+  let stable = 0;
+  let lastTop = -1;
+
+  // Percorre diretamente o viewport interno. O passo menor que a altura visivel
+  // garante sobreposicao entre janelas e evita perder linhas recicladas.
+  for (let i=0;i<140;i++) {
+    const max = maxScroll();
+    const ch = Math.max(1,Number(scroller.clientHeight||1));
+    const now = Number(scroller.scrollTop||0);
+
+    capture();
+
+    const sig = signature();
+    if (sig === previousSignature) stable++; else stable=0;
+    previousSignature=sig;
+
+    if (now >= max-1 && stable >= 2) break;
+
+    const step = Math.max(55,Math.floor(ch*0.42));
+    const next = Math.min(max,now+step);
+
+    if (next <= now+0.5) break;
+
+    lastTop = now;
+    await setTop(next);
+
+    if (Number(scroller.scrollTop||0) === lastTop && stable>=2) break;
+  }
+
+  // Forca o fundo e captura o Total.
+  await setTop(maxScroll());
+  await sleep(300);
+  capture();
+
+  // Passada reversa para cobrir reciclagem entre frames.
+  previousSignature='';
+  stable=0;
+
+  for (let i=0;i<140;i++) {
+    const now=Number(scroller.scrollTop||0);
+    capture();
+
+    const sig=signature();
+    if (sig===previousSignature) stable++; else stable=0;
+    previousSignature=sig;
+
+    if (now<=1 && stable>=2) break;
+
+    const ch=Math.max(1,Number(scroller.clientHeight||1));
+    const step=Math.max(55,Math.floor(ch*0.42));
+    const next=Math.max(0,now-step);
+    await setTop(next);
+  }
+
+  // Uma ultima captura no topo e restaura posicao original depois.
+  await setTop(0);
+  capture();
+
+  const rows=[...rowsStore.values()];
+  const uniqueCompanies=[...new Set(
+    rows.map(v=>String(v[0]||'').trim()).filter(v=>/^\d+$/.test(v))
+  )].sort((a,b)=>Number(a)-Number(b));
+
+  const hasTotal=rows.some(v=>norm(String(v[0]||''))==='TOTAL');
+
+  try {
+    scroller.scrollTop=Math.min(originalTop,maxScroll());
+    scroller.dispatchEvent(new Event('scroll',{bubbles:true}));
+  } catch {}
 
   return JSON.stringify({
     ok:true,
-    score:candidates[0].score,
-    x:Math.max(1, Math.round(rect.left + rect.width * 0.55)),
-    y:Math.max(1, Math.round(rect.top + Math.min(rect.height * 0.45, Math.max(20, rect.height - 30)))),
-    width:Math.round(rect.width),
-    height:Math.round(rect.height),
     rows,
-    companies,
-    signature:companies.join(','),
-    firstCompany:companies.length ? companies[0] : '',
-    lastCompany:companies.length ? companies[companies.length - 1] : ''
+    companies:uniqueCompanies,
+    dataRows:uniqueCompanies.length,
+    hasTotal,
+    scroller:{
+      range:maxScroll(),
+      scrollHeight:Number(scroller.scrollHeight||0),
+      clientHeight:Number(scroller.clientHeight||0),
+      scrollTop:Number(scroller.scrollTop||0)
+    },
+    diagnostics:{
+      visualRect:rectOf(visual),
+      gridRect:rectOf(grid),
+      scrollers:scrollerInfo
+    }
   });
 })()
 "@
 
-    function Get-NativeSnapshot {
-        $json = [string](Invoke-CdpExpression -Socket $Socket -Expression $snapshotExpression)
-
-        if ([string]::IsNullOrWhiteSpace($json)) {
-            return $null
-        }
-
-        try {
-            return ($json | ConvertFrom-Json)
-        }
-        catch {
-            return $null
-        }
-    }
-
-    function Add-SnapshotRows {
-        param(
-            [Parameter(Mandatory = $true)]$Snapshot,
-            [Parameter(Mandatory = $true)][hashtable]$RowStore
-        )
-
-        foreach ($row in @($Snapshot.rows)) {
-            $values = @($row)
-
-            if ($values.Count -eq 0) { continue }
-
-            $key = ($values | ForEach-Object { [string]$_ }) -join ([char]31)
-            $RowStore[$key] = $values
-        }
-    }
-
-    function Send-NativeWheel {
-        param(
-            [int]$X,
-            [int]$Y,
-            [double]$DeltaY
-        )
-
-        [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchMouseEvent" -Params @{
-            type = "mouseMoved"
-            x = $X
-            y = $Y
-            button = "none"
-        })
-
-        [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchMouseEvent" -Params @{
-            type = "mouseWheel"
-            x = $X
-            y = $Y
-            deltaX = 0
-            deltaY = $DeltaY
-            modifiers = 0
-        })
-    }
-
     $deadline = (Get-Date).AddSeconds(75)
-    $rowsFound = @{}
     $attempt = 0
-    $snapshot = $null
+    $last = $null
 
-    # Aguarda o grid existir de fato.
     do {
         $attempt++
-        $snapshot = Get-NativeSnapshot
 
-        if ($snapshot -and [bool]$snapshot.ok -and @($snapshot.rows).Count -gt 0) {
-            break
+        try {
+            $json = [string](Invoke-CdpExpression -Socket $Socket -Expression $expression)
+
+            if (-not [string]::IsNullOrWhiteSpace($json)) {
+                $result = $json | ConvertFrom-Json
+                $last = $result
+
+                if ($result -and [bool]$result.ok -and @($result.rows).Count -gt 0) {
+                    Write-RoboLog (
+                        "Tabela Power BI varrida pelo scroll INTERNO do visual. " +
+                        "Empresas=" + [string]$result.dataRows +
+                        " | Total=" + [string]$result.hasTotal +
+                        " | Scroll=" + [string]$result.scroller.scrollHeight +
+                        "/" + [string]$result.scroller.clientHeight
+                    )
+
+                    if ($result.diagnostics -and $result.diagnostics.scrollers) {
+                        foreach ($diag in @($result.diagnostics.scrollers | Select-Object -First 6)) {
+                            Write-RoboLog (
+                                "Scroller visual candidato: " + [string]$diag.reason +
+                                " | score=" + [string]$diag.score +
+                                " | range=" + [string]$diag.range +
+                                " | size=" + [string]$diag.scrollHeight +
+                                "/" + [string]$diag.clientHeight +
+                                " | overflowY=" + [string]$diag.overflowY
+                            )
+                        }
+                    }
+
+                    Write-RoboLog ("Empresas materializadas: " + (@($result.companies) -join ","))
+                    return @($result.rows)
+                }
+
+                if ($result -and [string]$result.message -eq "VISUAL_SCROLL_CONTAINER_NOT_FOUND") {
+                    Write-RoboLog (
+                        "Grid localizado, mas o viewport vertical interno ainda nao foi identificado. " +
+                        "Nova tentativa sera feita."
+                    ) "AVISO"
+                }
+            }
+        }
+        catch {
+            Write-RoboLog ("Leitura do scroll interno ainda indisponivel: " + $_.Exception.Message) "AVISO"
         }
 
-        if ($attempt -eq 1) {
-            Write-RoboLog (
-                "Texto do relatorio ja apareceu, mas o grid ainda nao foi materializado. " +
-                "Aguardando o Power BI concluir o visual."
-            ) "AVISO"
-        }
-
-        Start-Sleep -Milliseconds 700
+        Start-Sleep -Milliseconds 900
     } while ((Get-Date) -lt $deadline)
 
-    if (-not $snapshot -or -not [bool]$snapshot.ok) {
-        throw "Power BI nao materializou o grid esperado para iniciar a varredura nativa."
-    }
-
-    Add-SnapshotRows -Snapshot $snapshot -RowStore $rowsFound
-
-    $x = [int]$snapshot.x
-    $y = [int]$snapshot.y
-
-    Write-RoboLog (
-        "Varredura nativa Power BI iniciada sobre o grid. " +
-        "Viewport=" + [string]$snapshot.width + "x" + [string]$snapshot.height +
-        " | empresas visiveis=" + @($snapshot.companies).Count +
-        " | primeira=" + [string]$snapshot.firstCompany +
-        " | ultima=" + [string]$snapshot.lastCompany
-    )
-
-    # 1) Leva a barra interna a uma extremidade usando roda do mouse NATIVA.
-    # O evento CDP e confiavel (isTrusted) e chega ao scroll real sob o ponteiro.
-    $sameSignature = 0
-    $lastSignature = ""
-
-    for ($i = 0; $i -lt 30; $i++) {
-        Send-NativeWheel -X $x -Y $y -DeltaY -1200
-        Start-Sleep -Milliseconds 220
-
-        $snapshot = Get-NativeSnapshot
-        if (-not $snapshot -or -not [bool]$snapshot.ok) { continue }
-
-        Add-SnapshotRows -Snapshot $snapshot -RowStore $rowsFound
-
-        $signature = [string]$snapshot.signature
-        if ($signature -eq $lastSignature) { $sameSignature++ } else { $sameSignature = 0 }
-        $lastSignature = $signature
-
-        if ($sameSignature -ge 4) { break }
-    }
-
-    Write-RoboLog (
-        "Extremidade inicial atingida. " +
-        "primeira=" + [string]$snapshot.firstCompany +
-        " | ultima=" + [string]$snapshot.lastCompany
-    )
-
-    # 2) Varre da extremidade inicial ate a outra ponta.
-    $sameSignature = 0
-    $lastSignature = ""
-    $lastUniqueCompanyCount = 0
-    $stagnantUnique = 0
-
-    for ($i = 0; $i -lt 180; $i++) {
-        $snapshot = Get-NativeSnapshot
-
-        if ($snapshot -and [bool]$snapshot.ok) {
-            Add-SnapshotRows -Snapshot $snapshot -RowStore $rowsFound
-
-            $signature = [string]$snapshot.signature
-            if ($signature -eq $lastSignature) { $sameSignature++ } else { $sameSignature = 0 }
-            $lastSignature = $signature
-
-            $uniqueCompanies = @(
-                $rowsFound.Values |
-                ForEach-Object {
-                    $v = @($_)
-                    if ($v.Count -gt 0 -and ([string]$v[0]).Trim() -match '^\d+$') {
-                        ([string]$v[0]).Trim()
-                    }
-                } |
-                Sort-Object -Unique
-            )
-
-            if ($uniqueCompanies.Count -eq $lastUniqueCompanyCount) {
-                $stagnantUnique++
-            }
-            else {
-                $stagnantUnique = 0
-                $lastUniqueCompanyCount = $uniqueCompanies.Count
-            }
-
-            if (($i % 5) -eq 0) {
-                Write-RoboLog (
-                    "Varredura nativa: passo=" + $i +
-                    " | empresas unicas=" + $uniqueCompanies.Count +
-                    " | janela=" + [string]$snapshot.firstCompany +
-                    "..." + [string]$snapshot.lastCompany
-                )
-            }
-
-            if ($sameSignature -ge 6 -and $stagnantUnique -ge 6) {
-                break
-            }
-        }
-
-        Send-NativeWheel -X $x -Y $y -DeltaY 620
-        Start-Sleep -Milliseconds 190
-    }
-
-    # 3) Passada reversa de seguranca. Se uma linha foi reciclada entre dois
-    # frames do virtualizador, esta segunda passagem tende a materializa-la.
-    $sameSignature = 0
-    $lastSignature = ""
-
-    for ($i = 0; $i -lt 180; $i++) {
-        $snapshot = Get-NativeSnapshot
-
-        if ($snapshot -and [bool]$snapshot.ok) {
-            Add-SnapshotRows -Snapshot $snapshot -RowStore $rowsFound
-
-            $signature = [string]$snapshot.signature
-            if ($signature -eq $lastSignature) { $sameSignature++ } else { $sameSignature = 0 }
-            $lastSignature = $signature
-
-            if ($sameSignature -ge 6) {
-                break
-            }
-        }
-
-        Send-NativeWheel -X $x -Y $y -DeltaY -620
-        Start-Sleep -Milliseconds 170
-    }
-
-    $finalRows = @($rowsFound.Values)
-
-    $companiesFinal = @(
-        $finalRows |
-        ForEach-Object {
-            $values = @($_)
-
-            if ($values.Count -gt 0 -and ([string]$values[0]).Trim() -match '^\d+$') {
-                ([string]$values[0]).Trim()
-            }
-        } |
-        Sort-Object {[int]$_} -Unique
-    )
-
-    $hasTotal = @(
-        $finalRows |
-        Where-Object {
-            $values = @($_)
-            $values.Count -gt 0 -and
-            (ConvertTo-RoboPrecosNormalizedText ([string]$values[0])) -eq "TOTAL"
-        }
-    ).Count -gt 0
-
-    Write-RoboLog (
-        "Varredura nativa concluida: " +
-        $companiesFinal.Count + " empresa(s) unicas materializadas" +
-        " | Total capturado=" + $hasTotal +
-        " | IDs=" + ($companiesFinal -join ",")
-    )
-
-    if ($companiesFinal.Count -eq 0) {
-        throw "A varredura nativa do grid nao materializou nenhuma empresa."
-    }
-
-    return $finalRows
+    $detail = if ($last) { $last | ConvertTo-Json -Compress -Depth 8 } else { "sem retorno" }
+    throw ("Nao foi possivel varrer o viewport interno da tabela Power BI. Ultimo diagnostico: " + $detail)
 }
 
 function Get-RoboPrecosDiscountMode {
