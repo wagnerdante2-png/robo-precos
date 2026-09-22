@@ -141,13 +141,75 @@ function Get-RoboPrecosBiCredential {
     }
 }
 
+function Get-RoboPrecosBiPageTargets {
+    param([int]$Port)
+
+    $targets = @(Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/json" -f $Port) -UseBasicParsing -TimeoutSec 5)
+    return @($targets | Where-Object { $_.type -eq "page" })
+}
+
+function Set-RoboPrecosBiActiveTarget {
+    param(
+        [int]$Port,
+        [Parameter(Mandatory = $true)][string]$TargetId
+    )
+
+    try {
+        [void](Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/json/activate/{1}" -f $Port,$TargetId) -UseBasicParsing -TimeoutSec 5)
+    }
+    catch {
+        Write-RoboLog ("Chrome nao confirmou /json/activate para o target Power BI: " + $_.Exception.Message) "AVISO"
+    }
+}
+
+function Close-RoboPrecosBiOtherTargets {
+    param(
+        [int]$Port,
+        [Parameter(Mandatory = $true)][string]$KeepTargetId
+    )
+
+    $closed = 0
+    $pages = @(Get-RoboPrecosBiPageTargets -Port $Port)
+
+    foreach ($page in $pages) {
+        $id = [string]$page.id
+        if ([string]::IsNullOrWhiteSpace($id) -or $id -eq $KeepTargetId) {
+            continue
+        }
+
+        try {
+            [void](Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/json/close/{1}" -f $Port,$id) -UseBasicParsing -TimeoutSec 5)
+            $closed++
+        }
+        catch {
+            Write-RoboLog (
+                "Nao foi possivel fechar target antigo do Chrome dedicado: " +
+                $id + " | " + [string]$page.url
+            ) "AVISO"
+        }
+    }
+
+    Write-RoboLog ("Chrome Power BI: " + $closed + " aba(s) antiga(s) fechada(s).")
+}
+
 function Connect-RoboPrecosBiTarget {
     param(
         [int]$Port,
         [Parameter(Mandatory = $true)][string]$Url
     )
 
+    # Sempre cria UMA aba canonica nova para esta execucao.
     $target = New-CdpPageTarget -Port $Port -Url $Url
+
+    $targetId = [string]$target.id
+    if ([string]::IsNullOrWhiteSpace($targetId)) {
+        throw "Chrome DevTools criou a aba Power BI sem target id."
+    }
+
+    # Torna a aba criada a aba visivel ANTES de eliminar residuos de execucoes anteriores.
+    Set-RoboPrecosBiActiveTarget -Port $Port -TargetId $targetId
+    Close-RoboPrecosBiOtherTargets -Port $Port -KeepTargetId $targetId
+
     $wsUrl = [string]$target.webSocketDebuggerUrl
     $wsUrl = $wsUrl -replace 'ws://localhost:', 'ws://127.0.0.1:'
     $wsUrl = $wsUrl -replace 'ws://\[::1\]:', 'ws://127.0.0.1:'
@@ -170,11 +232,34 @@ function Connect-RoboPrecosBiTarget {
         throw ("Falha conectando a aba Power BI pelo Chrome DevTools: " + $_.Exception.Message)
     }
 
-    $probe = Invoke-CdpExpression -Socket $socket -Expression "'ROBO_BI_CDP_OK'"
-    if ([string]$probe -ne "ROBO_BI_CDP_OK") {
+    [void](Invoke-CdpCommand -Socket $socket -Method "Page.enable")
+
+    try {
+        [void](Invoke-CdpCommand -Socket $socket -Method "Page.bringToFront")
+    }
+    catch {
+        Write-RoboLog ("Nao foi possivel executar Page.bringToFront: " + $_.Exception.Message) "AVISO"
+    }
+
+    $probe = Invoke-CdpJsonExpression -Socket $socket -Expression @'
+(() => ({
+  marker:'ROBO_BI_CDP_OK',
+  href:location.href || '',
+  visibility:document.visibilityState || '',
+  title:document.title || ''
+}))()
+'@
+
+    if (-not $probe -or [string]$probe.marker -ne "ROBO_BI_CDP_OK") {
         try { $socket.Dispose() } catch {}
         throw "Canal CDP do Power BI nao respondeu ao teste Runtime.evaluate."
     }
+
+    Write-RoboLog (
+        "Target Power BI canonico conectado. ID=" + $targetId +
+        " | visibilidade=" + [string]$probe.visibility +
+        " | URL=" + [string]$probe.href
+    )
 
     return $socket
 }
@@ -215,7 +300,7 @@ function Start-RoboPrecosBiBrowser {
         Start-Process -FilePath $chromePath -ArgumentList $arguments | Out-Null
     }
     else {
-        Write-RoboLog "Chrome dedicado ao Power BI ja esta em execucao."
+        Write-RoboLog "Chrome dedicado ao Power BI ja esta em execucao. Sera criada uma aba canonica e as abas antigas serao fechadas."
     }
 
     Wait-CdpEndpoint -Port $port -TimeoutSeconds 30
