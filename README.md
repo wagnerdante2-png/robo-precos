@@ -275,3 +275,22 @@ A leitura do visual tenta por ate 45 segundos:
 A primeira tentativa vazia nao e mais tratada como falha.
 
 Login, credenciais e navegacao permanecem congelados no fluxo ja validado.
+
+
+## Varredura multi-scroll da tabela
+
+Na v0.4.9, a tabela virtualizada do Power BI nao depende mais de um unico container de scroll.
+
+O RoboPrecos:
+
+- identifica o grid correto pelo titulo/cabecalhos;
+- testa o proprio grid, ancestrais e descendentes scrollaveis;
+- percorre cada candidato progressivamente;
+- faz uma segunda passagem por percentuais de 0% a 100%;
+- forca uma ultima ida ao fundo para materializar o Total;
+- conta quantas empresas unicas cada candidato revelou;
+- escolhe o candidato com maior cobertura;
+- registra diagnosticos de scroll no log.
+
+A reconciliacao com o Total do BI continua sendo a aprovacao final.
+Login e navegacao permanecem congelados.
