@@ -1547,6 +1547,16 @@ function Get-RoboPrecosBiGridRows {
   const x=Math.max(5,Math.min(innerWidth-5,currentGridRect.left+currentGridRect.width*0.55));
   const y=Math.max(5,Math.min(innerHeight-5,currentGridRect.top+Math.min(currentGridRect.height*0.45,currentGridRect.height-20)));
 
+  const scrollHeight=Number(scroller.el.scrollHeight||0);
+  const clientHeight=Number(scroller.el.clientHeight||0);
+  const scrollTop=Number(scroller.el.scrollTop||0);
+  const maxScroll=Math.max(0,scrollHeight-clientHeight);
+  const trackHeight=Math.max(1,sr.height);
+  const thumbHeight=Math.max(18,Math.min(trackHeight,trackHeight*(clientHeight/Math.max(1,scrollHeight))));
+  const thumbTravel=Math.max(1,trackHeight-thumbHeight);
+  const scrollRatio=maxScroll>0 ? Math.max(0,Math.min(1,scrollTop/maxScroll)) : 0;
+  const thumbCenterY=sr.top+(thumbHeight/2)+(thumbTravel*scrollRatio);
+
   return JSON.stringify({
     ok:true,
     rows,
@@ -1559,10 +1569,14 @@ function Get-RoboPrecosBiGridRows {
     scroller:{
       reason:scroller.reason,
       score:Math.round(scroller.score),
-      scrollTop:Number(scroller.el.scrollTop||0),
-      scrollHeight:Number(scroller.el.scrollHeight||0),
-      clientHeight:Number(scroller.el.clientHeight||0),
-      maxScroll:Math.max(0,Number(scroller.el.scrollHeight||0)-Number(scroller.el.clientHeight||0)),
+      scrollTop,
+      scrollHeight,
+      clientHeight,
+      maxScroll,
+      thumbHeight,
+      thumbTravel,
+      thumbCenterY,
+      dragX:Math.max(2,Math.min(innerWidth-2,sr.right-6)),
       rect:{left:sr.left,top:sr.top,right:sr.right,bottom:sr.bottom,width:sr.width,height:sr.height}
     }
   });
@@ -1599,27 +1613,56 @@ function Get-RoboPrecosBiGridRows {
         }
     }
 
-    function Send-RoboPrecosBiNativeWheel {
+    function Move-RoboPrecosBiNativeScrollbar {
         param(
-            [int]$X,
-            [int]$Y,
-            [double]$DeltaY
+            [Parameter(Mandatory = $true)]$Snapshot,
+            [Parameter(Mandatory = $true)][double]$TargetRatio
         )
+
+        $ratio=[Math]::Max(0,[Math]::Min(1,$TargetRatio))
+        $x=[double]$Snapshot.scroller.dragX
+        $startY=[double]$Snapshot.scroller.thumbCenterY
+        $trackTop=[double]$Snapshot.scroller.rect.top
+        $thumbHeight=[double]$Snapshot.scroller.thumbHeight
+        $thumbTravel=[double]$Snapshot.scroller.thumbTravel
+        $targetY=$trackTop+($thumbHeight/2)+($thumbTravel*$ratio)
 
         [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchMouseEvent" -Params @{
             type = "mouseMoved"
-            x = $X
-            y = $Y
+            x = $x
+            y = $startY
             button = "none"
         })
 
         [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchMouseEvent" -Params @{
-            type = "mouseWheel"
-            x = $X
-            y = $Y
-            deltaX = 0
-            deltaY = $DeltaY
-            modifiers = 0
+            type = "mousePressed"
+            x = $x
+            y = $startY
+            button = "left"
+            buttons = 1
+            clickCount = 1
+        })
+
+        $steps=8
+        for ($j=1;$j -le $steps;$j++) {
+            $yy=$startY+(($targetY-$startY)*($j/$steps))
+            [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchMouseEvent" -Params @{
+                type = "mouseMoved"
+                x = $x
+                y = $yy
+                button = "left"
+                buttons = 1
+            })
+            Start-Sleep -Milliseconds 45
+        }
+
+        [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchMouseEvent" -Params @{
+            type = "mouseReleased"
+            x = $x
+            y = $targetY
+            button = "left"
+            buttons = 0
+            clickCount = 1
         })
     }
 
@@ -1659,138 +1702,98 @@ function Get-RoboPrecosBiGridRows {
         "..." + [string]$snapshot.lastCompany
     )
 
-    # 1) Vai para uma extremidade usando wheel NATIVO, nunca scrollTop JS.
-    $lastSignature=""
-    $lastTop=[double]-1
-    $stable=0
+    # 1) Prova rapida de que o thumb fisico esta sendo controlado.
+    # Se nao houver movimento real em 3 tentativas, aborta imediatamente.
+    $probeMoved=$false
+    $probeTargets=@(0.15,0.30,0.45)
+    $initialTop=[double]$snapshot.scroller.scrollTop
+    $initialSignature=[string]$snapshot.signature
 
-    for ($i=0;$i -lt 40;$i++) {
-        Send-RoboPrecosBiNativeWheel -X $x -Y $y -DeltaY -1000
-        Start-Sleep -Milliseconds 380
+    foreach ($probeRatio in $probeTargets) {
+        Move-RoboPrecosBiNativeScrollbar -Snapshot $snapshot -TargetRatio $probeRatio
+        Start-Sleep -Milliseconds 550
 
-        $snapshot=Get-RoboPrecosBiNativeGridSnapshot
-        if (-not $snapshot -or -not [bool]$snapshot.ok) { continue }
+        $after=Get-RoboPrecosBiNativeGridSnapshot
+        if (-not $after -or -not [bool]$after.ok) { continue }
 
-        Add-RoboPrecosBiSnapshotRows -Snapshot $snapshot -Store $store
+        Add-RoboPrecosBiSnapshotRows -Snapshot $after -Store $store
 
-        $signature=[string]$snapshot.signature
-        $top=[double]$snapshot.scroller.scrollTop
+        $topChanged=[Math]::Abs(([double]$after.scroller.scrollTop)-$initialTop) -gt 1
+        $windowChanged=([string]$after.signature -ne $initialSignature)
 
-        if ($signature -eq $lastSignature -and [Math]::Abs($top-$lastTop) -lt 0.5) {
-            $stable++
+        Write-RoboLog (
+            "Teste drag scrollbar ratio=" + $probeRatio +
+            " | scrollTop=" + [string]$after.scroller.scrollTop +
+            "/" + [string]$after.scroller.maxScroll +
+            " | janela=" + [string]$after.firstCompany +
+            "..." + [string]$after.lastCompany +
+            " | mudou=" + [string]($topChanged -or $windowChanged)
+        )
+
+        if ($topChanged -or $windowChanged) {
+            $probeMoved=$true
+            $snapshot=$after
+            break
         }
-        else {
-            $stable=0
-        }
-
-        $lastSignature=$signature
-        $lastTop=$top
-
-        if ($stable -ge 4) { break }
     }
 
-    Write-RoboLog (
-        "Extremidade inicial via wheel nativo. scrollTop=" + [string]$snapshot.scroller.scrollTop +
-        " | janela=" + [string]$snapshot.firstCompany +
-        "..." + [string]$snapshot.lastCompany
+    if (-not $probeMoved) {
+        throw (
+            "A scrollbar interna foi localizada, mas o thumb fisico nao respondeu a 3 tentativas de drag. " +
+            "Abortado rapidamente para nao deixar o relatorio piscando em loop."
+        )
+    }
+
+    # 2) Percorre a barra fisica por percentuais previsiveis.
+    # Cada posicao materializa uma janela diferente do visual virtualizado.
+    $targets=@(
+        0.00,0.08,0.16,0.24,0.32,0.40,0.48,
+        0.56,0.64,0.72,0.80,0.88,0.94,1.00
     )
 
-    # 2) Percorre a tabela inteira. Somente considera progresso real quando
-    # scrollTop OU conjunto de empresas visiveis muda.
-    $lastSignature=""
-    $lastTop=[double]-1
-    $stable=0
-    $lastUnique=0
-    $stagnantUnique=0
+    foreach ($ratio in $targets) {
+        $beforeTop=[double]$snapshot.scroller.scrollTop
+        $beforeSignature=[string]$snapshot.signature
 
-    for ($i=0;$i -lt 220;$i++) {
-        $snapshot=Get-RoboPrecosBiNativeGridSnapshot
-        if ($snapshot -and [bool]$snapshot.ok) {
-            Add-RoboPrecosBiSnapshotRows -Snapshot $snapshot -Store $store
+        Move-RoboPrecosBiNativeScrollbar -Snapshot $snapshot -TargetRatio $ratio
+        Start-Sleep -Milliseconds 600
 
-            $signature=[string]$snapshot.signature
-            $top=[double]$snapshot.scroller.scrollTop
-
-            if ($signature -eq $lastSignature -and [Math]::Abs($top-$lastTop) -lt 0.5) {
-                $stable++
-            }
-            else {
-                $stable=0
-            }
-
-            $lastSignature=$signature
-            $lastTop=$top
-
-            $uniqueCompanies=@(
-                $store.Values |
-                ForEach-Object {
-                    $v=@($_)
-                    if ($v.Count -gt 0 -and ([string]$v[0]).Trim() -match '^\d+$') {
-                        ([string]$v[0]).Trim()
-                    }
-                } |
-                Sort-Object {[int]$_} -Unique
-            )
-
-            if ($uniqueCompanies.Count -eq $lastUnique) {
-                $stagnantUnique++
-            }
-            else {
-                $stagnantUnique=0
-                $lastUnique=$uniqueCompanies.Count
-            }
-
-            if (($i % 5) -eq 0) {
-                Write-RoboLog (
-                    "Wheel nativo passo=" + $i +
-                    " | scrollTop=" + [string]$snapshot.scroller.scrollTop +
-                    "/" + [string]$snapshot.scroller.maxScroll +
-                    " | janela=" + [string]$snapshot.firstCompany +
-                    "..." + [string]$snapshot.lastCompany +
-                    " | empresas unicas=" + $uniqueCompanies.Count
-                )
-            }
-
-            $atEnd=([double]$snapshot.scroller.scrollTop -ge ([double]$snapshot.scroller.maxScroll - 1))
-
-            if ($atEnd -and $stable -ge 4 -and $stagnantUnique -ge 4) {
-                break
-            }
+        $after=Get-RoboPrecosBiNativeGridSnapshot
+        if (-not $after -or -not [bool]$after.ok) {
+            continue
         }
 
-        Send-RoboPrecosBiNativeWheel -X $x -Y $y -DeltaY 420
-        Start-Sleep -Milliseconds 360
+        Add-RoboPrecosBiSnapshotRows -Snapshot $after -Store $store
+
+        $topChanged=[Math]::Abs(([double]$after.scroller.scrollTop)-$beforeTop) -gt 1
+        $windowChanged=([string]$after.signature -ne $beforeSignature)
+
+        Write-RoboLog (
+            "Drag scrollbar ratio=" + $ratio +
+            " | scrollTop=" + [string]$after.scroller.scrollTop +
+            "/" + [string]$after.scroller.maxScroll +
+            " | janela=" + [string]$after.firstCompany +
+            "..." + [string]$after.lastCompany +
+            " | mudou=" + [string]($topChanged -or $windowChanged)
+        )
+
+        $snapshot=$after
     }
 
-    # 3) Passada reversa para cobrir qualquer frame perdido do virtualizador.
-    $lastSignature=""
-    $lastTop=[double]-1
-    $stable=0
+    # 3) Passada reversa em pontos intermediarios para cobrir reciclagem entre frames.
+    $reverseTargets=@(0.92,0.76,0.60,0.44,0.28,0.12,0.00)
 
-    for ($i=0;$i -lt 220;$i++) {
-        $snapshot=Get-RoboPrecosBiNativeGridSnapshot
-        if ($snapshot -and [bool]$snapshot.ok) {
-            Add-RoboPrecosBiSnapshotRows -Snapshot $snapshot -Store $store
+    foreach ($ratio in $reverseTargets) {
+        Move-RoboPrecosBiNativeScrollbar -Snapshot $snapshot -TargetRatio $ratio
+        Start-Sleep -Milliseconds 500
 
-            $signature=[string]$snapshot.signature
-            $top=[double]$snapshot.scroller.scrollTop
-
-            if ($signature -eq $lastSignature -and [Math]::Abs($top-$lastTop) -lt 0.5) {
-                $stable++
-            }
-            else {
-                $stable=0
-            }
-
-            $lastSignature=$signature
-            $lastTop=$top
-
-            $atStart=([double]$snapshot.scroller.scrollTop -le 1)
-            if ($atStart -and $stable -ge 4) { break }
+        $after=Get-RoboPrecosBiNativeGridSnapshot
+        if (-not $after -or -not [bool]$after.ok) {
+            continue
         }
 
-        Send-RoboPrecosBiNativeWheel -X $x -Y $y -DeltaY -420
-        Start-Sleep -Milliseconds 320
+        Add-RoboPrecosBiSnapshotRows -Snapshot $after -Store $store
+        $snapshot=$after
     }
 
     $finalRows=@($store.Values)
