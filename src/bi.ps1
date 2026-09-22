@@ -1578,9 +1578,31 @@ function ConvertFrom-RoboPrecosBiCurrentRows {
         if ($null -eq $quantity -or $null -eq $discount) { continue }
 
         $store = ConvertTo-RoboStore $companyText
+        $company = [int][double]$companyText.Replace(",", ".")
+
+        if ($records.ContainsKey($store)) {
+            $existing = $records[$store]
+
+            $sameQuantity = ([int]$existing.QuantidadeCupons -eq [int]$quantity)
+            $sameDiscount = ([Math]::Abs([double]$existing.Desconto - [double]$discount) -lt 0.005)
+
+            if (-not $sameQuantity -or -not $sameDiscount) {
+                throw (
+                    "Power BI reciclou a empresa " + $company +
+                    " com valores conflitantes. Primeiro: " +
+                    [int]$existing.QuantidadeCupons + " / R$ " +
+                    ([double]$existing.Desconto).ToString("N2",[Globalization.CultureInfo]::GetCultureInfo("pt-BR")) +
+                    " | Novo: " + [int]$quantity + " / R$ " +
+                    ([double]$discount).ToString("N2",[Globalization.CultureInfo]::GetCultureInfo("pt-BR"))
+                )
+            }
+
+            continue
+        }
+
         $records[$store] = [PSCustomObject]@{
             Loja = $store
-            Empresa = [int][double]$companyText.Replace(",", ".")
+            Empresa = $company
             QuantidadeCupons = [int]$quantity
             Desconto = [double]$discount
             Motivo = "PRECO ERRADO"
@@ -1588,7 +1610,7 @@ function ConvertFrom-RoboPrecosBiCurrentRows {
         }
     }
 
-    return @($records.Values | Sort-Object Loja)
+    return @($records.Values | Sort-Object Empresa)
 }
 
 function Get-RoboPrecosBiCurrentVisualTotal {
