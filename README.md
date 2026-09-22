@@ -1,81 +1,130 @@
 # RoboPrecos
 
-RPA local para coleta dos totalizadores de Auditoria de Precos no sistema PDA e gravacao segura na planilha corporativa de controle.
+RPA local para coleta da Auditoria de Precos no PDA e preenchimento automatizado dos descontos de **PRECO ERRADO** pelo Power BI.
 
-## Estado atual - v0.3
+## Estado atual - v0.4
 
-O fluxo operacional cobre coleta e escrita da planilha:
+Fluxo principal:
 
-- abre o Chrome controlado localmente;
-- autentica no PDA;
-- abre diretamente a tela de Auditoria de Preco;
-- seleciona loja e periodo;
-- coleta OK, Divergente, Sem etiqueta e Total auditado;
-- valida que OK + Divergente + Sem etiqueta = Total;
-- descobre automaticamente as lojas existentes no campo Centro;
-- percorre a rede inteira;
-- salva checkpoint apos cada loja;
-- retoma uma coleta interrompida;
-- refaz login automaticamente se a sessao expirar;
-- grava a planilha Controle de Auditoria de Precos;
-- preserva as colunas existentes das abas operacionais;
-- localiza o mes pela linha 2, sem depender de coluna fixa;
-- localiza as lojas pela coluna B, sem depender de linha fixa;
-- recalcula a planilha antes da whitelist, permitindo reconhecer novas lojas cadastradas pelas formulas;
-- cria backup antes de qualquer gravacao.
+1. recebe o periodo no CMD;
+2. coleta e valida a Auditoria de Precos no PDA;
+3. grava ETIQUETAS, DIVERGENCIAS e SEM PRECO;
+4. abre o Power BI em perfil dedicado;
+5. decide automaticamente qual fonte de descontos usar;
+6. coleta somente PRECO ERRADO;
+7. grava Quantidade de Cupons e Desconto na aba DESCONTOS;
+8. salva a planilha na raiz operacional.
 
-## Local da planilha de controle
+Nao existe exportacao intermediaria do Power BI para Excel no novo fluxo.
 
-A planilha operacional nao e mais gravada em Downloads.
+## Regra de descontos
 
-Quando o RoboPrecos e executado sozinho, a raiz operacional e a propria pasta do RoboPrecos.
+O mes do periodo informado define a fonte:
 
-Quando ele e executado pela Plataforma RPA em:
+- **mes atual**: pagina Resumo, visual DESCONTO POR MOTIVO;
+- **mes anterior/fechado**: pagina Descontos Mes Anterior;
+- **mes futuro**: bloqueado.
 
-`plataforma-rpa/robots/robo-precos/`
+No historico, o campo **Valor Total** e deliberadamente ignorado.
 
-a raiz operacional passa a ser automaticamente:
+Os campos gravados sao exclusivamente:
 
-`plataforma-rpa/`
+- Quantidade de Cupons;
+- Desconto;
+- Motivo = PRECO ERRADO.
 
-Portanto, a planilha final permanece ao lado de `central.ps1` e `Iniciar Central.cmd`.
+### Ausencia nao vira zero
 
-O robo aceita:
+O Power BI pode nao retornar todas as lojas.
 
-`Controle de Auditoria de Precos.xlsx`
+Por isso:
 
-ou uma unica variante compativel:
+- loja com Quantidade e Desconto validos -> grava;
+- zero explicito nos dois campos -> grava zero;
+- loja ausente -> nao toca na celula;
+- campo vazio/nulo -> nao toca na celula;
+- loja do BI inexistente na planilha -> ignora e registra no log.
 
-`Controle de Auditoria de Precos*.xlsx`
+O robo nunca converte ausencia de informacao em zero.
 
-Isso contempla versoes nomeadas, por exemplo, com sufixos de revisao.
+## Filtro historico
 
-### Migracao automatica
+A pagina Descontos Mes Anterior possui slicer Empresa.
 
-Se nenhuma planilha for encontrada na raiz operacional, o robo procura uma unica copia compativel:
+Antes da leitura, o robo precisa confirmar que o slicer esta em **Todos**. Se nao conseguir limpar/confirmar esse filtro, o modulo interrompe a coleta de descontos e nao grava dados parciais.
 
-1. na pasta do proprio RoboPrecos, quando ele estiver acoplado a Plataforma;
-2. na pasta Downloads do usuario, apenas para compatibilidade com a versao antiga.
+## Credencial Power BI
 
-Quando encontra uma unica copia antiga, ela e copiada para a raiz operacional e toda gravacao subsequente passa a ocorrer somente na copia da raiz.
+Na primeira execucao do modulo de descontos, o CMD solicita:
 
-Os backups sao criados em:
+- usuario/e-mail Power BI;
+- senha Power BI.
 
-`RoboPrecos_Backups/`
+A senha e armazenada localmente usando a protecao do Windows, da mesma forma que a credencial PDA.
 
-dentro da mesma raiz onde esta a planilha operacional.
+Arquivo local:
 
-## Compatibilidade com a planilha 2026-2028
+\`data/bi_credential.json\`
 
-O robô nao depende de posicoes fixas para encontrar o mes ou a loja:
+Ele e ignorado pelo Git.
 
-- ETIQUETAS: loja na coluna B, meses na linha 2;
-- DIVERGENCIAS: loja na coluna B, meses na linha 2;
-- SEM PRECO: loja na coluna B, meses na linha 2.
+O Chrome do BI usa um perfil persistente separado:
 
-Por isso a expansao ate janeiro de 2028 permanece compativel.
+\`output/chrome_bi/\`
 
-As linhas futuras de lojas podem ser preenchidas por formula. Antes de validar as whitelists, o robo forca um recalculo completo do Excel para materializar uma nova loja cadastrada.
+Se a sessao ainda estiver autenticada, o relatorio abre diretamente. Se a Microsoft solicitar login, o robo tenta preencher a credencial protegida. MFA/aprovacoes adicionais, quando existirem, precisam ser concluidas na janela aberta; o robo aguarda e retoma automaticamente.
+
+## Modos
+
+Execute:
+
+\`RoboPrecos.cmd\`
+
+Menu:
+
+1. testar uma unica loja no PDA;
+2. **fluxo completo PDA + Power BI + planilha**;
+3. **testar somente a leitura do Power BI sem gravar a planilha**.
+
+O modo 3 foi criado para validar o novo modulo com seguranca antes da primeira gravacao real.
+
+## Planilha operacional
+
+Quando executado pela Plataforma RPA em:
+
+\`plataforma-rpa/robots/robo-precos/\`
+
+a planilha operacional fica na raiz:
+
+\`plataforma-rpa/\`
+
+Quando executado isoladamente, fica na raiz do RoboPrecos.
+
+O robo reconhece uma unica planilha:
+
+\`Controle de Auditoria de Precos*.xlsx\`
+
+Se houver duas copias compativeis na raiz, ele interrompe para evitar gravacao no arquivo errado.
+
+Uma copia antiga encontrada em Downloads pode ser migrada automaticamente para a raiz, mas Downloads nao e mais o destino operacional.
+
+## Backups
+
+Antes da gravacao da Auditoria e antes da gravacao de Descontos sao criados backups em:
+
+\`RoboPrecos_Backups/\`
+
+## Arquivos de controle
+
+Coleta PDA:
+
+\`output/checkpoints/\`
+
+Snapshots do Power BI:
+
+\`output/descontos/\`
+
+Os snapshots permitem auditar exatamente quais lojas/valores foram lidos antes da gravacao.
 
 ## Premissas
 
@@ -89,53 +138,14 @@ As linhas futuras de lojas podem ser preenchidas por formula. Antes de validar a
 - sem GitHub Actions;
 - execucao local.
 
-## Execucao
-
-Execute:
-
-`RoboPrecos.cmd`
-
-O menu oferece:
-
-1. testar uma unica loja;
-2. coletar a rede e preencher a planilha de controle.
-
-No modo rede inteira, o robo le diretamente as opcoes atuais do campo Centro do PDA.
-
-## Checkpoint e retomada
-
-A cada loja concluida, o resultado de coleta e salvo em:
-
-`output/checkpoints/`
-
-Se ocorrer queda, timeout, fechamento ou erro em alguma loja, execute novamente o mesmo periodo.
-
-As lojas ja registradas como OK e matematicamente validadas sao preservadas. O robo tenta novamente somente as lojas pendentes ou com erro.
-
-O consolidado da coleta fica em:
-
-`output/auditoria_rede_YYYYMMDD_YYYYMMDD.csv`
-
-## Seguranca local
-
-Permanecem fora do Git:
-
-- `config.precos.json`;
-- `data/pda_credential.json`;
-- `output/`;
-- a planilha operacional;
-- `RoboPrecos_Backups/`.
-
-A credencial PDA e protegida localmente pelo Windows via DPAPI.
-
 ## Arquitetura
 
-`RoboPrecos.cmd`
-  -> `RoboPrecos.ps1`
-      -> `src/bootstrap.ps1`
-      -> `src/cdp.ps1`
-      -> `src/pda.ps1`
-      -> `src/network.ps1`
-      -> `src/control_workbook.ps1`
-
-A base herdada do robo-horas permanece no repositorio para reaproveitamento, mas o fluxo do RoboPrecos usa somente os modulos necessarios.
+\`RoboPrecos.cmd\`
+  -> \`RoboPrecos.ps1\`
+      -> \`src/bootstrap.ps1\`
+      -> \`src/cdp.ps1\`
+      -> \`src/pda.ps1\`
+      -> \`src/network.ps1\`
+      -> \`src/control_workbook.ps1\`
+      -> \`src/bi.ps1\`
+      -> \`src/discount_workbook.ps1\`
