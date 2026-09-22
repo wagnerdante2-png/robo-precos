@@ -1,7 +1,12 @@
-RoboPrecos Portable v0.4.1
+RoboPrecos Portable v0.4.2
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
-Correcao Windows PowerShell 5.1: codigo do BI sem literais acentuados
+Login Power BI por estados:
+  POWERBI_EMAIL -> MICROSOFT_EMAIL -> MICROSOFT_PASSWORD -> MICROSOFT_STAY -> AUTHENTICATED
+Link do relatorio aberto somente apos autenticacao completa
+singleSignOn nao e considerado autenticado
+Suporte a MFA/aprovacao manual com retomada
+Correcao da classificacao de mes corrente por chave AAAAMM
 Reconhecimento de visuais via DOM + Chrome Accessibility Tree
 Fallback de leitura de tabelas virtualizadas via Accessibility
 Power BI sem exportacao intermediaria
@@ -10,7 +15,6 @@ Mes fechado: Descontos Mes Anterior
 Somente motivo PRECO ERRADO
 Campos: Quantidade Cupons + Desconto
 Ausencia de loja/campo nao vira zero
-Gravacao seletiva somente de registros validos
 Modo de teste Power BI sem gravacao
 Planilha operacional na raiz da Plataforma RPA
 Backup antes de cada etapa de gravacao
