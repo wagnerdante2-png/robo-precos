@@ -9,6 +9,7 @@
     "queryTimeoutSeconds": 90
   },
   "bi": {
+    "loginUrl": "https://app.powerbi.com/",
     "summaryUrl": "https://app.powerbi.com/groups/cb155eaa-6b0a-4190-ae3f-5447f2fb3b58/reports/13902a52-6ab0-4c33-b73c-5352e1c490df/5e1f3f49a475efe362c0?experience=power-bi",
     "historicalUrl": "https://app.powerbi.com/groups/cb155eaa-6b0a-4190-ae3f-5447f2fb3b58/reports/13902a52-6ab0-4c33-b73c-5352e1c490df/d42a8bc5428005c25ae7?experience=power-bi",
     "debugPort": 9224,
