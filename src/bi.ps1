@@ -1211,11 +1211,10 @@ function Get-RoboPrecosBiGridRows {
     $titleJson = ($TitleContains | ConvertTo-Json -Compress)
     $headersJson = ($RequiredHeaders | ConvertTo-Json -Compress)
 
-    $expression = @"
-(async () => {
+    $snapshotExpression = @"
+(() => {
   const title = $titleJson;
   const required = $headersJson;
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
   const norm = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toUpperCase();
   const titleN = norm(title);
   const reqN = (required || []).map(norm);
@@ -1226,410 +1225,303 @@ function Get-RoboPrecosBiGridRows {
     let node = grid;
     let context = '';
 
-    for (let i=0; i<9 && node; i++, node=node.parentElement) {
+    for (let i=0; i<10 && node; i++, node=node.parentElement) {
       const text = norm(node.innerText || node.textContent);
-      if (text.length > context.length && text.length < 160000) context = text;
+      if (text.length > context.length && text.length < 180000) context = text;
     }
 
     const own = norm(grid.innerText || grid.textContent);
     let score = reqN.filter(h => own.includes(h) || context.includes(h)).length * 10;
     if (titleN && context.includes(titleN)) score += 100;
 
-    return {grid, score, context};
+    return {grid, score};
   }).sort((a,b) => b.score-a.score);
 
   if (!candidates.length || candidates[0].score < Math.max(10, reqN.length * 5)) {
-    return {
+    return JSON.stringify({
       ok:false,
       message:'GRID_NOT_FOUND',
       grids:allGrids.length,
-      rows:[],
-      diagnostics:[]
-    };
-  }
-
-  const grid = candidates[0].grid;
-
-  let visual = grid;
-  if (titleN) {
-    let node = grid;
-
-    for (let i=0; i<10 && node; i++, node=node.parentElement) {
-      if (norm(node.innerText || node.textContent).includes(titleN)) {
-        visual = node;
-      }
-    }
-  }
-
-  const captureRows = (store) => {
-    const rows = [...grid.querySelectorAll('[role="row"]')];
-
-    for (const row of rows) {
-      let cells = [...row.querySelectorAll(
-        '[role="columnheader"],[role="gridcell"],[role="rowheader"]'
-      )];
-
-      let values = cells.map(c =>
-        (c.innerText || c.textContent || '').replace(/\s+/g,' ').trim()
-      );
-
-      if (!values.length) {
-        values = (row.innerText || '')
-          .split(/\r?\n|\t/)
-          .map(s => s.trim());
-      }
-
-      if (!values.length) continue;
-
-      const key = values.join('\u001f');
-      store.set(key, values);
-    }
-  };
-
-  const countDataRows = rows => rows.filter(values =>
-    values &&
-    values.length &&
-    /^\d+$/.test(String(values[0] || '').trim())
-  ).length;
-
-  const hasTotalRow = rows => rows.some(values =>
-    values &&
-    values.length &&
-    norm(String(values[0] || '')) === 'TOTAL'
-  );
-
-  // O Power BI pode colocar o scroll real em um ancestral, no proprio grid
-  // ou em um descendente interno. Testamos todos os candidatos plausiveis.
-  const pool = [];
-  const seen = new Set();
-
-  const addCandidate = (el, label) => {
-    if (!el || seen.has(el)) return;
-    seen.add(el);
-
-    try {
-      const r = el.getBoundingClientRect();
-      const style = getComputedStyle(el);
-      const sh = Number(el.scrollHeight || 0);
-      const ch = Number(el.clientHeight || 0);
-
-      const plausible =
-        sh > ch + 5 ||
-        style.overflowY === 'auto' ||
-        style.overflowY === 'scroll' ||
-        style.overflowY === 'hidden' ||
-        el.getAttribute('role') === 'grid';
-
-      if (!plausible) return;
-      if (ch < 20 || r.width < 40) return;
-
-      pool.push({
-        el,
-        label,
-        initialTop:Number(el.scrollTop || 0),
-        initialHeight:sh,
-        initialClient:ch
-      });
-    } catch {}
-  };
-
-  addCandidate(grid, 'GRID');
-
-  let ancestor = grid.parentElement;
-  for (let i=0; i<12 && ancestor; i++, ancestor=ancestor.parentElement) {
-    addCandidate(ancestor, 'ANCESTOR_' + i);
-  }
-
-  for (const el of visual.querySelectorAll('*')) {
-    addCandidate(el, 'DESCENDANT');
-  }
-
-  // Garante que o grid puro tambem seja testado mesmo se nao parecer scrollavel.
-  if (!pool.some(x => x.el === grid)) {
-    pool.push({
-      el:grid,
-      label:'GRID_FORCED',
-      initialTop:Number(grid.scrollTop || 0),
-      initialHeight:Number(grid.scrollHeight || 0),
-      initialClient:Number(grid.clientHeight || 0)
+      rows:[]
     });
   }
 
-  const sweep = async item => {
-    const el = item.el;
-    const found = new Map();
-    let stagnant = 0;
-    let lastCount = -1;
-    let iterations = 0;
+  const grid = candidates[0].grid;
+  const rect = grid.getBoundingClientRect();
 
-    const capture = () => {
-      captureRows(found);
-      const count = countDataRows([...found.values()]);
-      if (count === lastCount) stagnant++;
-      else stagnant = 0;
-      lastCount = count;
-    };
+  const rows = [...grid.querySelectorAll('[role="row"]')].map(row => {
+    let cells = [...row.querySelectorAll(
+      '[role="columnheader"],[role="gridcell"],[role="rowheader"]'
+    )];
 
-    try {
-      el.scrollTop = 0;
-      el.dispatchEvent(new Event('scroll', {bubbles:true}));
-      await sleep(300);
-      capture();
+    let values = cells.map(c =>
+      (c.innerText || c.textContent || '').replace(/\s+/g,' ').trim()
+    );
 
-      // Primeiro percorre progressivamente. O scrollHeight de tabelas
-      // virtualizadas pode crescer enquanto novas linhas sao materializadas.
-      while (iterations++ < 160) {
-        const ch = Math.max(1, Number(el.clientHeight || 1));
-        const sh = Math.max(ch, Number(el.scrollHeight || ch));
-        const max = Math.max(0, sh - ch);
-        const now = Number(el.scrollTop || 0);
-
-        if (max <= 2) break;
-
-        const step = Math.max(80, Math.floor(ch * 0.55));
-        const next = Math.min(max, now + step);
-
-        if (next <= now + 1) {
-          if (now >= max - 2) break;
-          stagnant++;
-        } else {
-          el.scrollTop = next;
-          el.dispatchEvent(new Event('scroll', {bubbles:true}));
-          el.dispatchEvent(new WheelEvent('wheel', {
-            bubbles:true,
-            cancelable:true,
-            deltaY:step,
-            deltaMode:0
-          }));
-          await sleep(220);
-          capture();
-        }
-
-        const newMax = Math.max(0, Number(el.scrollHeight || ch) - Number(el.clientHeight || ch));
-        const newTop = Number(el.scrollTop || 0);
-
-        if (newTop >= newMax - 2 && stagnant >= 3) break;
-        if (stagnant >= 10) break;
-      }
-
-      // Segunda passagem por percentuais. Isso cobre grids que reciclam as linhas
-      // e nao respondem bem ao incremento linear.
-      const percentages = [
-        0,0.05,0.10,0.15,0.20,0.25,0.30,0.35,0.40,0.45,
-        0.50,0.55,0.60,0.65,0.70,0.75,0.80,0.85,0.90,0.95,1
-      ];
-
-      for (const pct of percentages) {
-        const ch = Math.max(1, Number(el.clientHeight || 1));
-        const sh = Math.max(ch, Number(el.scrollHeight || ch));
-        const max = Math.max(0, sh - ch);
-
-        if (max <= 2) break;
-
-        el.scrollTop = Math.round(max * pct);
-        el.dispatchEvent(new Event('scroll', {bubbles:true}));
-        await sleep(180);
-        capture();
-      }
-
-      // Forca uma ultima ida ao fundo para materializar o Total.
-      const ch = Math.max(1, Number(el.clientHeight || 1));
-      const sh = Math.max(ch, Number(el.scrollHeight || ch));
-      const max = Math.max(0, sh - ch);
-
-      if (max > 2) {
-        el.scrollTop = max;
-        el.dispatchEvent(new Event('scroll', {bubbles:true}));
-        await sleep(350);
-        capture();
-      }
-    }
-    catch {}
-
-    try {
-      el.scrollTop = item.initialTop;
-      el.dispatchEvent(new Event('scroll', {bubbles:true}));
-    } catch {}
-
-    const rows = [...found.values()];
-
-    return {
-      label:item.label,
-      rows,
-      dataRows:countDataRows(rows),
-      hasTotal:hasTotalRow(rows),
-      scrollHeight:Number(el.scrollHeight || 0),
-      clientHeight:Number(el.clientHeight || 0),
-      initialHeight:item.initialHeight,
-      initialClient:item.initialClient
-    };
-  };
-
-  const results = [];
-  const union = new Map();
-  let unionStable = 0;
-  let lastUnionCount = -1;
-
-  // Testa candidatos um por um e UNE tudo que cada scroll conseguiu
-  // materializar. Nao existe quantidade fixa de lojas aqui.
-  for (let i=0; i<pool.length && i<24; i++) {
-    const result = await sweep(pool[i]);
-    results.push(result);
-
-    for (const values of result.rows) {
-      const key = values.join('\u001f');
-      union.set(key, values);
+    if (!values.length) {
+      values = (row.innerText || '')
+        .split(/\r?\n|\t/)
+        .map(s => s.trim());
     }
 
-    const unionRows = [...union.values()];
-    const unionDataRows = countDataRows(unionRows);
+    return values;
+  }).filter(values => values && values.length);
 
-    if (unionDataRows === lastUnionCount) unionStable++;
-    else unionStable = 0;
+  const companies = rows
+    .map(v => String(v[0] || '').trim())
+    .filter(v => /^\d+$/.test(v));
 
-    lastUnionCount = unionDataRows;
-
-    // Se varios candidatos consecutivos nao acrescentarem nenhuma empresa
-    // e o Total ja tiver sido materializado, os demais scrolls sao redundantes.
-    if (unionStable >= 7 && hasTotalRow(unionRows)) {
-      break;
-    }
-  }
-
-  results.sort((a,b) => {
-    if (b.dataRows !== a.dataRows) return b.dataRows - a.dataRows;
-    if (Number(b.hasTotal) !== Number(a.hasTotal)) return Number(b.hasTotal) - Number(a.hasTotal);
-    return b.rows.length - a.rows.length;
-  });
-
-  const unionRows = [...union.values()];
-  const unionDataRows = countDataRows(unionRows);
-  const unionHasTotal = hasTotalRow(unionRows);
-  const best = results[0];
-
-  if (unionDataRows <= 0) {
-    return {
-      ok:false,
-      message:'GRID_ROWS_NOT_MATERIALIZED',
-      grids:allGrids.length,
-      rows:[],
-      diagnostics:results.map(x => ({
-        label:x.label,
-        dataRows:x.dataRows,
-        hasTotal:x.hasTotal,
-        scrollHeight:x.scrollHeight,
-        clientHeight:x.clientHeight
-      }))
-    };
-  }
-
-  return {
+  return JSON.stringify({
     ok:true,
     score:candidates[0].score,
-    rows:unionRows,
-    dataRows:unionDataRows,
-    hasTotal:unionHasTotal,
-    scroller:best ? best.label : 'UNION',
-    candidatesTested:results.length,
-    diagnostics:results.slice(0,10).map(x => ({
-      label:x.label,
-      dataRows:x.dataRows,
-      hasTotal:x.hasTotal,
-      scrollHeight:x.scrollHeight,
-      clientHeight:x.clientHeight
-    }))
-  };
+    x:Math.max(1, Math.round(rect.left + rect.width * 0.55)),
+    y:Math.max(1, Math.round(rect.top + Math.min(rect.height * 0.45, Math.max(20, rect.height - 30)))),
+    width:Math.round(rect.width),
+    height:Math.round(rect.height),
+    rows,
+    companies,
+    signature:companies.join(','),
+    firstCompany:companies.length ? companies[0] : '',
+    lastCompany:companies.length ? companies[companies.length - 1] : ''
+  });
 })()
 "@
 
-    $jsonExpression = "(async () => JSON.stringify(await (" + $expression + ")))()"
-    $deadline = (Get-Date).AddSeconds(60)
-    $attempt = 0
-    $lastResult = $null
-    $lastAxCount = 0
+    function Get-NativeSnapshot {
+        $json = [string](Invoke-CdpExpression -Socket $Socket -Expression $snapshotExpression)
 
+        if ([string]::IsNullOrWhiteSpace($json)) {
+            return $null
+        }
+
+        try {
+            return ($json | ConvertFrom-Json)
+        }
+        catch {
+            return $null
+        }
+    }
+
+    function Add-SnapshotRows {
+        param(
+            [Parameter(Mandatory = $true)]$Snapshot,
+            [Parameter(Mandatory = $true)][hashtable]$RowStore
+        )
+
+        foreach ($row in @($Snapshot.rows)) {
+            $values = @($row)
+
+            if ($values.Count -eq 0) { continue }
+
+            $key = ($values | ForEach-Object { [string]$_ }) -join ([char]31)
+            $RowStore[$key] = $values
+        }
+    }
+
+    function Send-NativeWheel {
+        param(
+            [int]$X,
+            [int]$Y,
+            [double]$DeltaY
+        )
+
+        [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchMouseEvent" -Params @{
+            type = "mouseMoved"
+            x = $X
+            y = $Y
+            button = "none"
+        })
+
+        [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchMouseEvent" -Params @{
+            type = "mouseWheel"
+            x = $X
+            y = $Y
+            deltaX = 0
+            deltaY = $DeltaY
+            modifiers = 0
+        })
+    }
+
+    $deadline = (Get-Date).AddSeconds(75)
+    $rowsFound = @{}
+    $attempt = 0
+    $snapshot = $null
+
+    # Aguarda o grid existir de fato.
     do {
         $attempt++
+        $snapshot = Get-NativeSnapshot
 
-        try {
-            $json = [string](Invoke-CdpExpression -Socket $Socket -Expression $jsonExpression)
-
-            if (-not [string]::IsNullOrWhiteSpace($json)) {
-                $result = $json | ConvertFrom-Json
-                $lastResult = $result
-
-                if ($result -and [bool]$result.ok -and @($result.rows).Count -gt 0) {
-                    Write-RoboLog (
-                        "Tabela Power BI varrida via DOM. Tentativa " + $attempt +
-                        " | Scroller: " + [string]$result.scroller +
-                        " | Empresas materializadas: " + [string]$result.dataRows +
-                        " | Total capturado: " + [string]$result.hasTotal
-                    )
-
-                    if ($result.PSObject.Properties.Name -contains "diagnostics") {
-                        foreach ($diag in @($result.diagnostics | Select-Object -First 5)) {
-                            Write-RoboLog (
-                                "Scroller candidato " + [string]$diag.label +
-                                " -> empresas=" + [string]$diag.dataRows +
-                                " | total=" + [string]$diag.hasTotal +
-                                " | scroll=" + [string]$diag.scrollHeight +
-                                "/" + [string]$diag.clientHeight
-                            )
-                        }
-                    }
-
-                    return @($result.rows)
-                }
-            }
-        }
-        catch {
-            Write-RoboLog (
-                "Varredura DOM Power BI ainda indisponivel na tentativa " +
-                $attempt + ": " + $_.Exception.Message
-            ) "AVISO"
-        }
-
-        try {
-            $axRows = @(Get-RoboPrecosBiAccessibilityRows -Socket $Socket)
-            $lastAxCount = $axRows.Count
-
-            if ($axRows.Count -gt 0) {
-                Write-RoboLog (
-                    "Tabela Power BI materializada via Accessibility na tentativa " +
-                    $attempt + " com " + $axRows.Count + " linha(s)."
-                )
-                return @($axRows)
-            }
-        }
-        catch {
-            Write-RoboLog (
-                "Accessibility Power BI ainda indisponivel na tentativa " +
-                $attempt + ": " + $_.Exception.Message
-            ) "AVISO"
+        if ($snapshot -and [bool]$snapshot.ok -and @($snapshot.rows).Count -gt 0) {
+            break
         }
 
         if ($attempt -eq 1) {
             Write-RoboLog (
-                "Texto do relatorio ja apareceu, mas a grade completa ainda nao foi " +
-                "materializada. Aguardando o Power BI concluir o visual."
+                "Texto do relatorio ja apareceu, mas o grid ainda nao foi materializado. " +
+                "Aguardando o Power BI concluir o visual."
             ) "AVISO"
         }
 
-        Start-Sleep -Milliseconds 800
+        Start-Sleep -Milliseconds 700
     } while ((Get-Date) -lt $deadline)
 
-    $detail = if ($lastResult) {
-        ($lastResult | ConvertTo-Json -Compress -Depth 8)
-    } else {
-        "sem retorno DOM"
+    if (-not $snapshot -or -not [bool]$snapshot.ok) {
+        throw "Power BI nao materializou o grid esperado para iniciar a varredura nativa."
     }
 
-    throw (
-        "Power BI exibiu o relatorio, mas a tabela completa nao ficou disponivel " +
-        "ao Chrome em 60 segundos. Tentativas: " + $attempt +
-        " | AX rows: " + $lastAxCount +
-        " | Ultimo DOM: " + $detail
+    Add-SnapshotRows -Snapshot $snapshot -RowStore $rowsFound
+
+    $x = [int]$snapshot.x
+    $y = [int]$snapshot.y
+
+    Write-RoboLog (
+        "Varredura nativa Power BI iniciada sobre o grid. " +
+        "Viewport=" + [string]$snapshot.width + "x" + [string]$snapshot.height +
+        " | empresas visiveis=" + @($snapshot.companies).Count +
+        " | primeira=" + [string]$snapshot.firstCompany +
+        " | ultima=" + [string]$snapshot.lastCompany
     )
+
+    # 1) Leva a barra interna a uma extremidade usando roda do mouse NATIVA.
+    # O evento CDP e confiavel (isTrusted) e chega ao scroll real sob o ponteiro.
+    $sameSignature = 0
+    $lastSignature = ""
+
+    for ($i = 0; $i -lt 30; $i++) {
+        Send-NativeWheel -X $x -Y $y -DeltaY -1200
+        Start-Sleep -Milliseconds 220
+
+        $snapshot = Get-NativeSnapshot
+        if (-not $snapshot -or -not [bool]$snapshot.ok) { continue }
+
+        Add-SnapshotRows -Snapshot $snapshot -RowStore $rowsFound
+
+        $signature = [string]$snapshot.signature
+        if ($signature -eq $lastSignature) { $sameSignature++ } else { $sameSignature = 0 }
+        $lastSignature = $signature
+
+        if ($sameSignature -ge 4) { break }
+    }
+
+    Write-RoboLog (
+        "Extremidade inicial atingida. " +
+        "primeira=" + [string]$snapshot.firstCompany +
+        " | ultima=" + [string]$snapshot.lastCompany
+    )
+
+    # 2) Varre da extremidade inicial ate a outra ponta.
+    $sameSignature = 0
+    $lastSignature = ""
+    $lastUniqueCompanyCount = 0
+    $stagnantUnique = 0
+
+    for ($i = 0; $i -lt 180; $i++) {
+        $snapshot = Get-NativeSnapshot
+
+        if ($snapshot -and [bool]$snapshot.ok) {
+            Add-SnapshotRows -Snapshot $snapshot -RowStore $rowsFound
+
+            $signature = [string]$snapshot.signature
+            if ($signature -eq $lastSignature) { $sameSignature++ } else { $sameSignature = 0 }
+            $lastSignature = $signature
+
+            $uniqueCompanies = @(
+                $rowsFound.Values |
+                ForEach-Object {
+                    $v = @($_)
+                    if ($v.Count -gt 0 -and ([string]$v[0]).Trim() -match '^\d+$') {
+                        ([string]$v[0]).Trim()
+                    }
+                } |
+                Sort-Object -Unique
+            )
+
+            if ($uniqueCompanies.Count -eq $lastUniqueCompanyCount) {
+                $stagnantUnique++
+            }
+            else {
+                $stagnantUnique = 0
+                $lastUniqueCompanyCount = $uniqueCompanies.Count
+            }
+
+            if (($i % 5) -eq 0) {
+                Write-RoboLog (
+                    "Varredura nativa: passo=" + $i +
+                    " | empresas unicas=" + $uniqueCompanies.Count +
+                    " | janela=" + [string]$snapshot.firstCompany +
+                    "..." + [string]$snapshot.lastCompany
+                )
+            }
+
+            if ($sameSignature -ge 6 -and $stagnantUnique -ge 6) {
+                break
+            }
+        }
+
+        Send-NativeWheel -X $x -Y $y -DeltaY 620
+        Start-Sleep -Milliseconds 190
+    }
+
+    # 3) Passada reversa de seguranca. Se uma linha foi reciclada entre dois
+    # frames do virtualizador, esta segunda passagem tende a materializa-la.
+    $sameSignature = 0
+    $lastSignature = ""
+
+    for ($i = 0; $i -lt 180; $i++) {
+        $snapshot = Get-NativeSnapshot
+
+        if ($snapshot -and [bool]$snapshot.ok) {
+            Add-SnapshotRows -Snapshot $snapshot -RowStore $rowsFound
+
+            $signature = [string]$snapshot.signature
+            if ($signature -eq $lastSignature) { $sameSignature++ } else { $sameSignature = 0 }
+            $lastSignature = $signature
+
+            if ($sameSignature -ge 6) {
+                break
+            }
+        }
+
+        Send-NativeWheel -X $x -Y $y -DeltaY -620
+        Start-Sleep -Milliseconds 170
+    }
+
+    $finalRows = @($rowsFound.Values)
+
+    $companiesFinal = @(
+        $finalRows |
+        ForEach-Object {
+            $values = @($_)
+
+            if ($values.Count -gt 0 -and ([string]$values[0]).Trim() -match '^\d+$') {
+                ([string]$values[0]).Trim()
+            }
+        } |
+        Sort-Object {[int]$_} -Unique
+    )
+
+    $hasTotal = @(
+        $finalRows |
+        Where-Object {
+            $values = @($_)
+            $values.Count -gt 0 -and
+            (ConvertTo-RoboPrecosNormalizedText ([string]$values[0])) -eq "TOTAL"
+        }
+    ).Count -gt 0
+
+    Write-RoboLog (
+        "Varredura nativa concluida: " +
+        $companiesFinal.Count + " empresa(s) unicas materializadas" +
+        " | Total capturado=" + $hasTotal +
+        " | IDs=" + ($companiesFinal -join ",")
+    )
+
+    if ($companiesFinal.Count -eq 0) {
+        throw "A varredura nativa do grid nao materializou nenhuma empresa."
+    }
+
+    return $finalRows
 }
 
 function Get-RoboPrecosDiscountMode {
