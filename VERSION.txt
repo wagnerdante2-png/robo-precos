@@ -1,9 +1,11 @@
-RoboHoras Portable v0.9
-Build: 2026-09-17
-Teste sequencial com ate 3 destinatarios
-Opcao de envio para TODOS os destinatarios de teste
-Retry individual e continuidade em caso de falha
-Resumo CSV por lote de disparo
-Envio automatico via UI Automation do Windows
-Configuracao futura de agendamento preparada e desativada
-Sem instalacao | Sem Python | Sem GitHub Actions
+RoboPrecos Portable v0.3
+Build: 2026-09-22
+Coleta PDA por loja ou rede inteira
+Gravacao nas abas ETIQUETAS, DIVERGENCIAS e SEM PRECO
+Planilha operacional mantida na raiz do pacote / Plataforma RPA
+Migracao automatica de copia legada encontrada em Downloads
+Recalculo completo antes da leitura das whitelists
+Mes localizado dinamicamente pela linha 2
+Loja localizada dinamicamente pela coluna B
+Backup local antes da gravacao
+Sem instalacao | Sem Python | Sem Selenium | Sem GitHub Actions
