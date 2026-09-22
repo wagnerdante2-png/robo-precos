@@ -354,3 +354,18 @@ O RoboPrecos:
 - reconcilia a soma final com o Total do Power BI.
 
 O bloco de login foi mantido byte a byte durante esta alteracao.
+
+
+## Aba canonica unica do Power BI
+
+Na v0.5.4 o Chrome dedicado ao Power BI nao acumula mais abas entre execucoes.
+
+A cada execucao:
+- uma aba canonica nova e criada via CDP;
+- essa aba e ativada e trazida para frente;
+- outras abas antigas daquele Chrome dedicado sao fechadas;
+- toda autenticacao, navegacao e coleta ocorrem na mesma aba/socket.
+
+Isso evita declarar autenticacao em uma aba de fundo enquanto outra aba visivel continua parada no login.
+
+O bloco de login nao foi alterado nesta mudanca.
