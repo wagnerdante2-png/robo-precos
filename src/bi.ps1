@@ -1313,25 +1313,56 @@ function Get-RoboPrecosBiGridRows {
 "@
 
     $jsonExpression = "(async () => JSON.stringify(await (" + $expression + ")))()"
-    $json = [string](Invoke-CdpExpression -Socket $Socket -Expression $jsonExpression)
+    $deadline = (Get-Date).AddSeconds(45)
+    $attempt = 0
+    $lastResult = $null
+    $lastAxCount = 0
 
-    if ([string]::IsNullOrWhiteSpace($json)) {
-        throw "Power BI nao devolveu dados da tabela."
-    }
+    do {
+        $attempt++
 
-    $result = $json | ConvertFrom-Json
+        try {
+            $json = [string](Invoke-CdpExpression -Socket $Socket -Expression $jsonExpression)
 
-    if ($result -and [bool]$result.ok) {
-        return @($result.rows)
-    }
+            if (-not [string]::IsNullOrWhiteSpace($json)) {
+                $result = $json | ConvertFrom-Json
+                $lastResult = $result
 
-    $axRows = @(Get-RoboPrecosBiAccessibilityRows -Socket $Socket)
-    if ($axRows.Count -gt 0) {
-        Write-RoboLog ("Tabela Power BI lida pelo fallback AX: " + $axRows.Count + " linha(s) acessiveis.")
-        return @($axRows)
-    }
+                if ($result -and [bool]$result.ok -and @($result.rows).Count -gt 0) {
+                    Write-RoboLog ("Tabela Power BI materializada via DOM na tentativa " + $attempt + " com " + @($result.rows).Count + " linha(s).")
+                    return @($result.rows)
+                }
+            }
+        }
+        catch {
+            Write-RoboLog ("Leitura DOM Power BI ainda indisponivel na tentativa " + $attempt + ": " + $_.Exception.Message) "AVISO"
+        }
 
-    throw ("Nao foi possivel localizar/ler a tabela esperada no Power BI via DOM ou acessibilidade. Detalhe DOM: " + ($result | ConvertTo-Json -Compress -Depth 5))
+        try {
+            $axRows = @(Get-RoboPrecosBiAccessibilityRows -Socket $Socket)
+            $lastAxCount = $axRows.Count
+
+            if ($axRows.Count -gt 0) {
+                Write-RoboLog ("Tabela Power BI materializada via Accessibility na tentativa " + $attempt + " com " + $axRows.Count + " linha(s).")
+                return @($axRows)
+            }
+        }
+        catch {
+            Write-RoboLog ("Accessibility Power BI ainda indisponivel na tentativa " + $attempt + ": " + $_.Exception.Message) "AVISO"
+        }
+
+        if ($attempt -eq 1) {
+            Write-RoboLog "Texto do relatorio ja apareceu, mas o grid ainda nao foi materializado. Aguardando o Power BI concluir o visual." "AVISO"
+        }
+
+        Start-Sleep -Milliseconds 750
+    } while ((Get-Date) -lt $deadline)
+
+    $detail = if ($lastResult) { ($lastResult | ConvertTo-Json -Compress -Depth 5) } else { "sem retorno DOM" }
+    throw (
+        "Power BI exibiu o relatorio, mas a tabela nao ficou disponivel ao Chrome em 45 segundos. " +
+        "Tentativas: " + $attempt + " | AX rows: " + $lastAxCount + " | Ultimo DOM: " + $detail
+    )
 }
 
 function Get-RoboPrecosDiscountMode {
