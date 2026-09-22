@@ -19,7 +19,7 @@ function Get-RoboPrecosBiConfig {
     if ($Config -and ($Config.PSObject.Properties.Name -contains "bi") -and $Config.bi) {
         foreach ($key in $script:RoboPrecosBiDefaultConfig.Keys) {
             if ($Config.bi.PSObject.Properties.Name -contains $key) {
-                $value = $Config.bi.$key
+                $value = $Config.bi.PSObject.Properties[$key].Value
                 if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) {
                     $result[$key] = $value
                 }
@@ -566,7 +566,14 @@ function Get-RoboPrecosBiGridRows {
 })()
 "@
 
-    $result = Invoke-CdpJsonExpression -Socket $Socket -Expression $expression
+    $jsonExpression = "(async () => JSON.stringify(await (" + $expression + ")))()"
+    $json = [string](Invoke-CdpExpression -Socket $Socket -Expression $jsonExpression)
+
+    if ([string]::IsNullOrWhiteSpace($json)) {
+        throw "Power BI nao devolveu dados da tabela."
+    }
+
+    $result = $json | ConvertFrom-Json
 
     if (-not $result -or -not [bool]$result.ok) {
         throw ("Nao foi possivel localizar/ler a tabela esperada no Power BI. Detalhe: " + ($result | ConvertTo-Json -Compress -Depth 5))
@@ -747,7 +754,10 @@ function Invoke-RoboPrecosBiDiscountCollection {
             Write-Host ("DESCONTOS: mes fechado {0} -> usando DESCONTOS MES ANTERIOR" -f $decision.MonthDate.ToString("MM/yyyy")) -ForegroundColor Cyan
 
             Open-RoboPrecosBiPage -Socket $socket -Config $Config -Url ([string]$bi.historicalUrl) -RequiredTexts @("Quantidade Cupons", "Valor Total", "Desconto")
-            [void](Clear-RoboPrecosBiEmpresaSlicer -Socket $socket)
+            $slicerState = Clear-RoboPrecosBiEmpresaSlicer -Socket $socket
+            if ([string]$slicerState -eq "NOT_FOUND") {
+                throw "Nao foi possivel confirmar o filtro Empresa=Todos no historico do Power BI. Nenhum desconto sera gravado para evitar leitura parcial por filtro persistente."
+            }
             Start-Sleep -Seconds 2
 
             $rows = @(Get-RoboPrecosBiGridRows -Socket $socket -RequiredHeaders @("ANO", "MÊS", "EMPRESA", "TIPO", "VALOR TOTAL", "DESCONTO", "QUANTIDADE CUPONS"))
