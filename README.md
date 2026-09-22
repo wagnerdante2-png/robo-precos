@@ -314,3 +314,14 @@ Fluxo:
 6. reconcilia Quantidade Cupons e Desconto com o Total do visual.
 
 A ordem do visual nao importa. A coluna EMPRESA e a chave de identificacao da loja.
+
+
+## Chave por empresa e conflito de reciclagem
+
+A ordem visual da tabela nao e usada para identificar lojas.
+
+Cada linha e identificada pela coluna EMPRESA e convertida para MLxx.
+
+Se a mesma empresa for materializada mais de uma vez durante o scroll virtual
+com Quantidade Cupons ou Desconto divergentes, a coleta falha em vez de
+sobrescrever silenciosamente o primeiro valor.
