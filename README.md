@@ -149,3 +149,23 @@ Os snapshots permitem auditar exatamente quais lojas/valores foram lidos antes d
       -> \`src/control_workbook.ps1\`
       -> \`src/bi.ps1\`
       -> \`src/discount_workbook.ps1\`
+
+
+## Login Power BI por estados
+
+O RoboPrecos nao abre mais o link direto do relatorio antes de autenticar.
+
+Sequencia esperada:
+
+1. pagina inicial do Power BI: informa o e-mail corporativo e envia;
+2. pagina Microsoft de conta/e-mail, quando apresentada;
+3. pagina Microsoft de senha;
+4. pergunta para permanecer conectado;
+5. confirmacao real de sessao autenticada;
+6. somente entao abre o link do relatorio de descontos.
+
+Paginas `singleSignOn` nao sao consideradas sessao autenticada.
+
+Se houver MFA ou aprovacao externa, o robo aguarda a intervencao humana e retoma depois.
+
+A classificacao de mes corrente/historico usa apenas ano e mes, evitando diferencas de milissegundos entre objetos DateTime.
