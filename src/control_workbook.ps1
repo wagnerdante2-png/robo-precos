@@ -38,18 +38,10 @@ function Get-RoboPrecosControlWorkbookPath {
     $operationalRoot = Get-RoboPrecosOperationalRoot
     Ensure-RoboDirectory $operationalRoot
 
-    $cedilla = [char]0x00E7
-    $expectedName = "Controle de Auditoria de Pre" + $cedilla + "os.xlsx"
-    $expectedPath = Join-Path $operationalRoot $expectedName
-
-    if (Test-Path -LiteralPath $expectedPath -PathType Leaf) {
-        return $expectedPath
-    }
-
     $matches = @(Get-RoboPrecosWorkbookMatches -Directory $operationalRoot)
 
     if ($matches.Count -eq 1) {
-        Write-RoboLog ("Planilha localizada na raiz operacional por nome compativel: " + $matches[0].FullName)
+        Write-RoboLog ("Planilha localizada na raiz operacional: " + $matches[0].FullName)
         return $matches[0].FullName
     }
 
