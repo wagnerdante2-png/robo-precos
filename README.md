@@ -325,3 +325,15 @@ Cada linha e identificada pela coluna EMPRESA e convertida para MLxx.
 Se a mesma empresa for materializada mais de uma vez durante o scroll virtual
 com Quantidade Cupons ou Desconto divergentes, a coleta falha em vez de
 sobrescrever silenciosamente o primeiro valor.
+
+
+## Bloqueio de dupla submissao no login
+
+Na v0.5.2, depois de Enviar, Entrar ou Sim, o RoboPrecos aguarda
+a tela mudar de estado antes de executar qualquer nova acao.
+
+Isso evita repetir o clique enquanto o Power BI/Microsoft ainda esta
+processando o redirect da tela anterior.
+
+O preenchimento de e-mail, senha e confirmacao continua igual ao fluxo
+que ja havia funcionado.
