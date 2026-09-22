@@ -1,12 +1,15 @@
-RoboPrecos Portable v0.4.2
+RoboPrecos Portable v0.4.3
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
-Login Power BI por estados:
-  POWERBI_EMAIL -> MICROSOFT_EMAIL -> MICROSOFT_PASSWORD -> MICROSOFT_STAY -> AUTHENTICATED
-Link do relatorio aberto somente apos autenticacao completa
+Login Power BI por estados e arvore de acessibilidade CDP
+Campo de e-mail preenchido via backendDOMNodeId + Input.insertText
+Senha preenchida via backendDOMNodeId + Input.insertText
+Botoes acionados via foco acessivel + ENTER
+Nao depende de querySelector para os controles de login
 singleSignOn nao e considerado autenticado
+Link do relatorio aberto somente apos autenticacao completa
 Suporte a MFA/aprovacao manual com retomada
-Correcao da classificacao de mes corrente por chave AAAAMM
+Classificacao de mes corrente por chave AAAAMM
 Reconhecimento de visuais via DOM + Chrome Accessibility Tree
 Fallback de leitura de tabelas virtualizadas via Accessibility
 Power BI sem exportacao intermediaria
