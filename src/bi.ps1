@@ -315,6 +315,8 @@ function Get-RoboPrecosBiFlatDomNodes {
     param([System.Net.WebSockets.ClientWebSocket]$Socket)
 
     [void](Invoke-CdpCommand -Socket $Socket -Method "DOM.enable")
+    [void](Invoke-CdpCommand -Socket $Socket -Method "Runtime.enable")
+
     $result = Invoke-CdpCommand -Socket $Socket -Method "DOM.getFlattenedDocument" -Params @{
         depth = -1
         pierce = $true
@@ -327,134 +329,187 @@ function Get-RoboPrecosBiFlatDomNodes {
     return @($result.nodes)
 }
 
-function Get-RoboPrecosBiDomAttributes {
-    param($Node)
-
-    $map = @{}
-    if (-not $Node) { return $map }
-
-    $prop = $Node.PSObject.Properties["attributes"]
-    if (-not $prop -or -not $prop.Value) { return $map }
-
-    $items = @($prop.Value)
-    for ($i = 0; $i -lt $items.Count - 1; $i += 2) {
-        $map[([string]$items[$i]).ToLowerInvariant()] = [string]$items[$i + 1]
-    }
-
-    return $map
-}
-
-function Get-RoboPrecosBiDomNodeText {
+function Resolve-RoboPrecosBiDomObject {
     param(
-        [array]$Nodes,
-        $Node
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [Parameter(Mandatory = $true)]$Node
     )
 
-    if (-not $Node) { return "" }
-
-    $parts = New-Object System.Collections.Generic.List[string]
-    $queue = New-Object System.Collections.Generic.Queue[int]
-
-    $nodeIdProp = $Node.PSObject.Properties["nodeId"]
-    if (-not $nodeIdProp) { return "" }
-
-    $queue.Enqueue([int]$nodeIdProp.Value)
-    $guard = 0
-
-    while ($queue.Count -gt 0 -and $guard -lt 500) {
-        $guard++
-        $currentId = $queue.Dequeue()
-
-        foreach ($child in $Nodes) {
-            $parentProp = $child.PSObject.Properties["parentId"]
-            if (-not $parentProp -or [int]$parentProp.Value -ne $currentId) {
-                continue
-            }
-
-            $nameProp = $child.PSObject.Properties["nodeName"]
-            $valueProp = $child.PSObject.Properties["nodeValue"]
-            $childIdProp = $child.PSObject.Properties["nodeId"]
-
-            if ($nameProp -and [string]$nameProp.Value -eq "#text" -and $valueProp) {
-                $value = ([string]$valueProp.Value).Trim()
-                if (-not [string]::IsNullOrWhiteSpace($value)) {
-                    $parts.Add($value)
-                }
-            }
-
-            if ($childIdProp) {
-                $queue.Enqueue([int]$childIdProp.Value)
-            }
-        }
+    $backendProperty = $Node.PSObject.Properties["backendNodeId"]
+    if (-not $backendProperty) {
+        return $null
     }
 
-    return ($parts -join " ")
+    try {
+        $resolved = Invoke-CdpCommand -Socket $Socket -Method "DOM.resolveNode" -Params @{
+            backendNodeId = [int]$backendProperty.Value
+        }
+
+        if ($resolved -and ($resolved.PSObject.Properties.Name -contains "object")) {
+            return $resolved.object
+        }
+    }
+    catch {}
+
+    return $null
 }
 
-function Find-RoboPrecosBiDomInput {
+function Invoke-RoboPrecosBiObjectFunction {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [Parameter(Mandatory = $true)]$RemoteObject,
+        [Parameter(Mandatory = $true)][string]$FunctionDeclaration,
+        [array]$Arguments = @()
+    )
+
+    $objectIdProperty = $RemoteObject.PSObject.Properties["objectId"]
+    if (-not $objectIdProperty -or [string]::IsNullOrWhiteSpace([string]$objectIdProperty.Value)) {
+        return $null
+    }
+
+    $params = @{
+        objectId = [string]$objectIdProperty.Value
+        functionDeclaration = $FunctionDeclaration
+        returnByValue = $true
+        awaitPromise = $true
+        userGesture = $true
+    }
+
+    if ($Arguments.Count -gt 0) {
+        $params.arguments = @($Arguments | ForEach-Object { @{ value = $_ } })
+    }
+
+    $response = Invoke-CdpCommand -Socket $Socket -Method "Runtime.callFunctionOn" -Params $params
+    if (-not $response) { return $null }
+
+    $exception = $response.PSObject.Properties["exceptionDetails"]
+    if ($exception -and $exception.Value) {
+        throw ("Erro JavaScript no controle Power BI: " + ($exception.Value | ConvertTo-Json -Depth 10 -Compress))
+    }
+
+    $resultProperty = $response.PSObject.Properties["result"]
+    if (-not $resultProperty -or -not $resultProperty.Value) {
+        return $null
+    }
+
+    $remote = $resultProperty.Value
+    $valueProperty = $remote.PSObject.Properties["value"]
+    if ($valueProperty) {
+        return $valueProperty.Value
+    }
+
+    return $null
+}
+
+function Get-RoboPrecosBiNodeInfo {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [Parameter(Mandatory = $true)]$Node
+    )
+
+    $object = Resolve-RoboPrecosBiDomObject -Socket $Socket -Node $Node
+    if (-not $object) { return $null }
+
+    $json = Invoke-RoboPrecosBiObjectFunction -Socket $Socket -RemoteObject $object -FunctionDeclaration @'
+function() {
+  try {
+    const r = this.getBoundingClientRect ? this.getBoundingClientRect() : {width:0,height:0};
+    const s = window.getComputedStyle ? getComputedStyle(this) : null;
+    const visible = !!(
+      r &&
+      r.width > 1 &&
+      r.height > 1 &&
+      (!s || (s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity || 1) > 0))
+    );
+    return JSON.stringify({
+      visible,
+      tag: (this.tagName || '').toLowerCase(),
+      type: (this.type || '').toLowerCase(),
+      name: this.name || '',
+      id: this.id || '',
+      placeholder: this.placeholder || '',
+      aria: this.getAttribute ? (this.getAttribute('aria-label') || '') : '',
+      title: this.title || '',
+      value: this.value == null ? '' : String(this.value),
+      text: (this.innerText || this.textContent || '').replace(/\s+/g,' ').trim(),
+      disabled: !!this.disabled,
+      readOnly: !!this.readOnly
+    });
+  } catch (e) {
+    return JSON.stringify({visible:false,error:String(e)});
+  }
+}
+'@
+
+    if ([string]::IsNullOrWhiteSpace([string]$json)) { return $null }
+
+    try {
+        $info = ([string]$json | ConvertFrom-Json)
+        $info | Add-Member -NotePropertyName RemoteObject -NotePropertyValue $object -Force
+        $info | Add-Member -NotePropertyName SourceNode -NotePropertyValue $Node -Force
+        return $info
+    }
+    catch {
+        return $null
+    }
+}
+
+function Find-RoboPrecosBiVisibleInput {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
         [ValidateSet("EMAIL","PASSWORD")][string]$Kind
     )
 
     $nodes = @(Get-RoboPrecosBiFlatDomNodes -Socket $Socket)
-    $fallback = $null
     $best = $null
     $bestScore = -1
 
     foreach ($node in $nodes) {
-        $nodeNameProp = $node.PSObject.Properties["nodeName"]
-        if (-not $nodeNameProp -or ([string]$nodeNameProp.Value).ToUpperInvariant() -ne "INPUT") {
+        $nodeNameProperty = $node.PSObject.Properties["nodeName"]
+        if (-not $nodeNameProperty -or ([string]$nodeNameProperty.Value).ToUpperInvariant() -ne "INPUT") {
             continue
         }
 
-        $attrs = Get-RoboPrecosBiDomAttributes -Node $node
-        $type = if ($attrs.ContainsKey("type")) { ([string]$attrs["type"]).ToLowerInvariant() } else { "" }
-        $name = if ($attrs.ContainsKey("name")) { ConvertTo-RoboPrecosNormalizedText $attrs["name"] } else { "" }
-        $id = if ($attrs.ContainsKey("id")) { ConvertTo-RoboPrecosNormalizedText $attrs["id"] } else { "" }
-        $placeholder = if ($attrs.ContainsKey("placeholder")) { ConvertTo-RoboPrecosNormalizedText $attrs["placeholder"] } else { "" }
-        $aria = if ($attrs.ContainsKey("aria-label")) { ConvertTo-RoboPrecosNormalizedText $attrs["aria-label"] } else { "" }
+        $info = Get-RoboPrecosBiNodeInfo -Socket $Socket -Node $node
+        if (-not $info -or -not [bool]$info.visible -or [bool]$info.disabled -or [bool]$info.readOnly) {
+            continue
+        }
 
+        $type = ConvertTo-RoboPrecosNormalizedText ([string]$info.type)
+        $name = ConvertTo-RoboPrecosNormalizedText ([string]$info.name)
+        $id = ConvertTo-RoboPrecosNormalizedText ([string]$info.id)
+        $placeholder = ConvertTo-RoboPrecosNormalizedText ([string]$info.placeholder)
+        $aria = ConvertTo-RoboPrecosNormalizedText ([string]$info.aria)
         $score = 0
 
         if ($Kind -eq "EMAIL") {
-            if ($type -eq "email") { $score += 100 }
-            if ($type -eq "text" -or [string]::IsNullOrWhiteSpace($type)) { $score += 20 }
-            if ($name.Contains("EMAIL") -or $name.Contains("LOGIN")) { $score += 80 }
-            if ($id.Contains("EMAIL") -or $id.Contains("LOGIN")) { $score += 60 }
-            if ($placeholder.Contains("EMAIL")) { $score += 100 }
-            if ($aria.Contains("EMAIL")) { $score += 100 }
-
-            if (-not $fallback -and $type -ne "password" -and $type -ne "hidden") {
-                $fallback = $node
-            }
+            if ($type -eq "EMAIL") { $score += 200 }
+            if ($type -eq "TEXT" -or [string]::IsNullOrWhiteSpace($type)) { $score += 25 }
+            if ($name.Contains("EMAIL") -or $name.Contains("LOGIN")) { $score += 120 }
+            if ($id.Contains("EMAIL") -or $id.Contains("LOGIN")) { $score += 100 }
+            if ($placeholder.Contains("EMAIL")) { $score += 180 }
+            if ($aria.Contains("EMAIL")) { $score += 180 }
+            if ($type -eq "PASSWORD" -or $type -eq "HIDDEN") { $score = -1000 }
         }
         else {
-            if ($type -eq "password") { $score += 150 }
-            if ($name.Contains("PASSWD") -or $name.Contains("PASSWORD") -or $name.Contains("SENHA")) { $score += 100 }
-            if ($id.Contains("PASSWD") -or $id.Contains("PASSWORD") -or $id.Contains("SENHA")) { $score += 80 }
-            if ($placeholder.Contains("PASSWORD") -or $placeholder.Contains("SENHA")) { $score += 100 }
-            if ($aria.Contains("PASSWORD") -or $aria.Contains("SENHA")) { $score += 100 }
+            if ($type -eq "PASSWORD") { $score += 300 }
+            if ($name.Contains("PASSWD") -or $name.Contains("PASSWORD") -or $name.Contains("SENHA")) { $score += 150 }
+            if ($id.Contains("PASSWD") -or $id.Contains("PASSWORD") -or $id.Contains("SENHA")) { $score += 120 }
+            if ($placeholder.Contains("PASSWORD") -or $placeholder.Contains("SENHA")) { $score += 180 }
+            if ($aria.Contains("PASSWORD") -or $aria.Contains("SENHA")) { $score += 180 }
         }
 
         if ($score -gt $bestScore) {
             $bestScore = $score
-            $best = $node
+            $best = $info
         }
     }
 
-    if ($Kind -eq "EMAIL" -and $bestScore -le 0) {
-        return $fallback
-    }
-
-    if ($bestScore -gt 0) {
-        return $best
-    }
-
+    if ($bestScore -gt 0) { return $best }
     return $null
 }
 
-function Wait-RoboPrecosBiDomInput {
+function Wait-RoboPrecosBiVisibleInput {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
         [ValidateSet("EMAIL","PASSWORD")][string]$Kind,
@@ -464,18 +519,15 @@ function Wait-RoboPrecosBiDomInput {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 
     do {
-        $inputNode = Find-RoboPrecosBiDomInput -Socket $Socket -Kind $Kind
-        if ($inputNode) {
-            return $inputNode
-        }
-
+        $info = Find-RoboPrecosBiVisibleInput -Socket $Socket -Kind $Kind
+        if ($info) { return $info }
         Start-Sleep -Milliseconds 300
     } while ((Get-Date) -lt $deadline)
 
     return $null
 }
 
-function Find-RoboPrecosBiDomButton {
+function Find-RoboPrecosBiVisibleButton {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
         [Parameter(Mandatory = $true)][string[]]$Labels
@@ -487,47 +539,40 @@ function Find-RoboPrecosBiDomButton {
     $bestScore = -1
 
     foreach ($node in $nodes) {
-        $nodeNameProp = $node.PSObject.Properties["nodeName"]
-        if (-not $nodeNameProp) { continue }
+        $nodeNameProperty = $node.PSObject.Properties["nodeName"]
+        if (-not $nodeNameProperty) { continue }
 
-        $nodeName = ([string]$nodeNameProp.Value).ToUpperInvariant()
-        $attrs = Get-RoboPrecosBiDomAttributes -Node $node
+        $nodeName = ([string]$nodeNameProperty.Value).ToUpperInvariant()
+        if ($nodeName -notin @("BUTTON","INPUT")) { continue }
 
-        $isButton = ($nodeName -eq "BUTTON")
-        if ($nodeName -eq "INPUT" -and $attrs.ContainsKey("type")) {
-            $inputType = ([string]$attrs["type"]).ToLowerInvariant()
-            if ($inputType -in @("submit","button")) {
-                $isButton = $true
-            }
+        $info = Get-RoboPrecosBiNodeInfo -Socket $Socket -Node $node
+        if (-not $info -or -not [bool]$info.visible -or [bool]$info.disabled) {
+            continue
         }
 
-        if (-not $isButton) { continue }
-
-        $parts = New-Object System.Collections.Generic.List[string]
-
-        foreach ($key in @("value","aria-label","title","name","id")) {
-            if ($attrs.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace([string]$attrs[$key])) {
-                $parts.Add([string]$attrs[$key])
-            }
+        if ($nodeName -eq "INPUT" -and ([string]$info.type) -notin @("submit","button")) {
+            continue
         }
 
-        $descendantText = Get-RoboPrecosBiDomNodeText -Nodes $nodes -Node $node
-        if (-not [string]::IsNullOrWhiteSpace($descendantText)) {
-            $parts.Add($descendantText)
-        }
+        $search = ConvertTo-RoboPrecosNormalizedText (
+            ([string]$info.text) + " " +
+            ([string]$info.value) + " " +
+            ([string]$info.aria) + " " +
+            ([string]$info.title) + " " +
+            ([string]$info.name) + " " +
+            ([string]$info.id)
+        )
 
-        $search = ConvertTo-RoboPrecosNormalizedText ($parts -join " ")
         $score = 0
-
         foreach ($label in $normalizedLabels) {
             if ([string]::IsNullOrWhiteSpace($label)) { continue }
-            if ($search -eq $label) { $score = [Math]::Max($score, 200) }
-            elseif ($search.Contains($label)) { $score = [Math]::Max($score, 100) }
+            if ($search -eq $label) { $score = [Math]::Max($score, 300) }
+            elseif ($search.Contains($label)) { $score = [Math]::Max($score, 150) }
         }
 
         if ($score -gt $bestScore) {
             $bestScore = $score
-            $best = $node
+            $best = $info
         }
     }
 
@@ -535,68 +580,82 @@ function Find-RoboPrecosBiDomButton {
     return $null
 }
 
-function Focus-RoboPrecosBiDomNode {
+function Set-RoboPrecosBiInputValue {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
-        [Parameter(Mandatory = $true)]$Node
-    )
-
-    $backendProperty = $Node.PSObject.Properties["backendNodeId"]
-    if (-not $backendProperty) {
-        throw "Controle DOM do Power BI nao possui backendNodeId."
-    }
-
-    [void](Invoke-CdpCommand -Socket $Socket -Method "DOM.enable")
-    [void](Invoke-CdpCommand -Socket $Socket -Method "DOM.focus" -Params @{
-        backendNodeId = [int]$backendProperty.Value
-    })
-}
-
-function Set-RoboPrecosBiFocusedText {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [Parameter(Mandatory = $true)]$InputInfo,
         [Parameter(Mandatory = $true)][string]$Text
     )
 
-    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
-        type = "keyDown"; key = "a"; code = "KeyA"; modifiers = 2
-    })
-    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
-        type = "keyUp"; key = "a"; code = "KeyA"; modifiers = 2
-    })
-    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
-        type = "keyDown"; key = "Backspace"; code = "Backspace"; windowsVirtualKeyCode = 8
-    })
-    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
-        type = "keyUp"; key = "Backspace"; code = "Backspace"; windowsVirtualKeyCode = 8
-    })
+    $result = Invoke-RoboPrecosBiObjectFunction -Socket $Socket -RemoteObject $InputInfo.RemoteObject -Arguments @($Text) -FunctionDeclaration @'
+function(value) {
+  try {
+    let proto = this;
+    let desc = null;
+    while (proto && !desc) {
+      proto = Object.getPrototypeOf(proto);
+      if (proto) desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    }
 
-    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.insertText" -Params @{ text = $Text })
+    if (desc && desc.set) {
+      desc.set.call(this, value);
+    } else {
+      this.value = value;
+    }
+
+    this.dispatchEvent(new Event('input', {bubbles:true, composed:true}));
+    this.dispatchEvent(new Event('change', {bubbles:true, composed:true}));
+    this.dispatchEvent(new KeyboardEvent('keyup', {bubbles:true, composed:true, key:'Unidentified'}));
+
+    return String(this.value == null ? '' : this.value);
+  } catch (e) {
+    return 'ERROR:' + String(e);
+  }
+}
+'@
+
+    if ([string]$result -like "ERROR:*") {
+        throw ("Falha preenchendo controle Power BI: " + [string]$result)
+    }
+
+    return [string]$result
 }
 
-function Press-RoboPrecosBiEnter {
-    param([System.Net.WebSockets.ClientWebSocket]$Socket)
-
-    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
-        type = "keyDown"; key = "Enter"; code = "Enter"; windowsVirtualKeyCode = 13
-    })
-    [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
-        type = "keyUp"; key = "Enter"; code = "Enter"; windowsVirtualKeyCode = 13
-    })
-}
-
-function Invoke-RoboPrecosBiDomButton {
+function Click-RoboPrecosBiButton {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
-        [Parameter(Mandatory = $true)][string[]]$Labels
+        [Parameter(Mandatory = $true)]$ButtonInfo
     )
 
-    $button = Find-RoboPrecosBiDomButton -Socket $Socket -Labels $Labels
-    if (-not $button) { return $false }
+    $result = Invoke-RoboPrecosBiObjectFunction -Socket $Socket -RemoteObject $ButtonInfo.RemoteObject -FunctionDeclaration @'
+function() {
+  try {
+    this.click();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+'@
 
-    Focus-RoboPrecosBiDomNode -Socket $Socket -Node $button
-    Press-RoboPrecosBiEnter -Socket $Socket
-    return $true
+    return [bool]$result
+}
+
+function Wait-RoboPrecosBiVisibleButton {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [Parameter(Mandatory = $true)][string[]]$Labels,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $button = Find-RoboPrecosBiVisibleButton -Socket $Socket -Labels $Labels
+        if ($button) { return $button }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    return $null
 }
 
 function Invoke-RoboPrecosBiLoginStep {
@@ -609,68 +668,70 @@ function Invoke-RoboPrecosBiLoginStep {
     $kind = [string]$State.kind
 
     if ($kind -eq "POWERBI_EMAIL") {
-        $email = Wait-RoboPrecosBiDomInput -Socket $Socket -Kind "EMAIL" -TimeoutSeconds 20
+        $email = Wait-RoboPrecosBiVisibleInput -Socket $Socket -Kind "EMAIL" -TimeoutSeconds 20
         if (-not $email) {
-            return "ERROR:POWERBI_EMAIL_INPUT_NOT_FOUND_FLAT_DOM"
+            return "ERROR:POWERBI_VISIBLE_EMAIL_NOT_FOUND"
         }
 
-        Focus-RoboPrecosBiDomNode -Socket $Socket -Node $email
-        Set-RoboPrecosBiFocusedText -Socket $Socket -Text ([string]$Credential.Username)
-        Start-Sleep -Milliseconds 200
-
-        if (-not (Invoke-RoboPrecosBiDomButton -Socket $Socket -Labels @("ENVIAR","SUBMIT","CONTINUAR","CONTINUE"))) {
-            Focus-RoboPrecosBiDomNode -Socket $Socket -Node $email
-            Press-RoboPrecosBiEnter -Socket $Socket
+        $actual = Set-RoboPrecosBiInputValue -Socket $Socket -InputInfo $email -Text ([string]$Credential.Username)
+        if ($actual -ne [string]$Credential.Username) {
+            return "ERROR:POWERBI_EMAIL_VALUE_NOT_APPLIED"
         }
 
-        return "POWERBI_EMAIL_SUBMITTED_FLAT_DOM"
+        Start-Sleep -Milliseconds 300
+        $send = Wait-RoboPrecosBiVisibleButton -Socket $Socket -Labels @("ENVIAR","SUBMIT","CONTINUAR","CONTINUE") -TimeoutSeconds 5
+        if (-not $send -or -not (Click-RoboPrecosBiButton -Socket $Socket -ButtonInfo $send)) {
+            return "ERROR:POWERBI_SEND_BUTTON_NOT_CLICKED"
+        }
+
+        return "POWERBI_EMAIL_SUBMITTED_DIRECT"
     }
 
     if ($kind -eq "MICROSOFT_EMAIL") {
-        $email = Find-RoboPrecosBiDomInput -Socket $Socket -Kind "EMAIL"
-
+        $email = Wait-RoboPrecosBiVisibleInput -Socket $Socket -Kind "EMAIL" -TimeoutSeconds 8
         if ($email) {
-            Focus-RoboPrecosBiDomNode -Socket $Socket -Node $email
-            Set-RoboPrecosBiFocusedText -Socket $Socket -Text ([string]$Credential.Username)
-            Start-Sleep -Milliseconds 200
-
-            if (-not (Invoke-RoboPrecosBiDomButton -Socket $Socket -Labels @("AVANCAR","PROXIMO","NEXT","ENTRAR","SIGN IN"))) {
-                Focus-RoboPrecosBiDomNode -Socket $Socket -Node $email
-                Press-RoboPrecosBiEnter -Socket $Socket
+            $actual = Set-RoboPrecosBiInputValue -Socket $Socket -InputInfo $email -Text ([string]$Credential.Username)
+            if ($actual -ne [string]$Credential.Username) {
+                return "ERROR:MICROSOFT_EMAIL_VALUE_NOT_APPLIED"
             }
 
-            return "MICROSOFT_EMAIL_SUBMITTED_FLAT_DOM"
+            Start-Sleep -Milliseconds 300
+            $next = Wait-RoboPrecosBiVisibleButton -Socket $Socket -Labels @("AVANCAR","PROXIMO","NEXT","ENTRAR","SIGN IN") -TimeoutSeconds 5
+            if ($next -and (Click-RoboPrecosBiButton -Socket $Socket -ButtonInfo $next)) {
+                return "MICROSOFT_EMAIL_SUBMITTED_DIRECT"
+            }
         }
 
-        # Quando a conta ja foi carregada pela Microsoft, pode nao haver campo de email.
-        # Nesse caso o fluxo segue aguardando a proxima tela em vez de falhar.
-        return "WAITING:MICROSOFT_EMAIL_NO_INPUT"
+        return "WAITING:MICROSOFT_EMAIL_NO_VISIBLE_INPUT"
     }
 
     if ($kind -eq "MICROSOFT_PASSWORD") {
-        $password = Wait-RoboPrecosBiDomInput -Socket $Socket -Kind "PASSWORD" -TimeoutSeconds 20
+        $password = Wait-RoboPrecosBiVisibleInput -Socket $Socket -Kind "PASSWORD" -TimeoutSeconds 20
         if (-not $password) {
-            return "ERROR:MICROSOFT_PASSWORD_INPUT_NOT_FOUND_FLAT_DOM"
+            return "ERROR:MICROSOFT_VISIBLE_PASSWORD_NOT_FOUND"
         }
 
-        Focus-RoboPrecosBiDomNode -Socket $Socket -Node $password
-        Set-RoboPrecosBiFocusedText -Socket $Socket -Text ([string]$Credential.Password)
-        Start-Sleep -Milliseconds 200
-
-        if (-not (Invoke-RoboPrecosBiDomButton -Socket $Socket -Labels @("ENTRAR","SIGN IN","CONTINUAR","CONTINUE"))) {
-            Focus-RoboPrecosBiDomNode -Socket $Socket -Node $password
-            Press-RoboPrecosBiEnter -Socket $Socket
+        $actualPassword = Set-RoboPrecosBiInputValue -Socket $Socket -InputInfo $password -Text ([string]$Credential.Password)
+        if ([string]::IsNullOrWhiteSpace($actualPassword)) {
+            return "ERROR:MICROSOFT_PASSWORD_VALUE_NOT_APPLIED"
         }
 
-        return "MICROSOFT_PASSWORD_SUBMITTED_FLAT_DOM"
+        Start-Sleep -Milliseconds 300
+        $enter = Wait-RoboPrecosBiVisibleButton -Socket $Socket -Labels @("ENTRAR","SIGN IN","CONTINUAR","CONTINUE") -TimeoutSeconds 5
+        if (-not $enter -or -not (Click-RoboPrecosBiButton -Socket $Socket -ButtonInfo $enter)) {
+            return "ERROR:MICROSOFT_ENTER_BUTTON_NOT_CLICKED"
+        }
+
+        return "MICROSOFT_PASSWORD_SUBMITTED_DIRECT"
     }
 
     if ($kind -eq "MICROSOFT_STAY") {
-        if (Invoke-RoboPrecosBiDomButton -Socket $Socket -Labels @("SIM","YES","CONTINUAR","CONTINUE")) {
-            return "MICROSOFT_STAY_CONFIRMED_FLAT_DOM"
+        $yes = Wait-RoboPrecosBiVisibleButton -Socket $Socket -Labels @("SIM","YES") -TimeoutSeconds 10
+        if (-not $yes -or -not (Click-RoboPrecosBiButton -Socket $Socket -ButtonInfo $yes)) {
+            return "ERROR:MICROSOFT_STAY_YES_NOT_CLICKED"
         }
 
-        return "ERROR:MICROSOFT_STAY_YES_NOT_FOUND_FLAT_DOM"
+        return "MICROSOFT_STAY_CONFIRMED_DIRECT"
     }
 
     return ("WAITING:" + $kind)
