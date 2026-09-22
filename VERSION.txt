@@ -1,12 +1,13 @@
-RoboPrecos Portable v0.5.0
+RoboPrecos Portable v0.5.1
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
 LOGIN E NAVEGACAO CONGELADOS
 Scroll interno Power BI via wheel NATIVO CDP
 Input.dispatchMouseEvent type=mouseWheel sobre o grid
 Varredura extremidade -> extremidade + passada reversa
-Linhas unificadas pelo numero da coluna EMPRESA
+Linhas identificadas pela coluna EMPRESA
 Ordem visual 1->61 ou 61->1 indiferente
+Conflito de mesma empresa com valores divergentes interrompe a coleta
 Sem hardcode de quantidade de lojas
 Mes corrente reconciliado com o Total do visual Power BI
 Modo 3 exibe TODAS as lojas coletadas
