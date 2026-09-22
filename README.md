@@ -169,3 +169,20 @@ Paginas `singleSignOn` nao sao consideradas sessao autenticada.
 Se houver MFA ou aprovacao externa, o robo aguarda a intervencao humana e retoma depois.
 
 A classificacao de mes corrente/historico usa apenas ano e mes, evitando diferencas de milissegundos entre objetos DateTime.
+
+
+## Login por acessibilidade CDP
+
+A partir da v0.4.3, o login do Power BI nao depende de localizar inputs por CSS/DOM comum.
+
+O robo usa a arvore de acessibilidade do Chrome para:
+
+- localizar o campo de e-mail visivel;
+- focar o controle via CDP;
+- digitar o usuario fornecido no CMD;
+- acionar Enviar;
+- localizar e preencher a senha;
+- acionar Entrar;
+- confirmar a tela de permanecer conectado.
+
+Isso cobre telas renderizadas em shadow DOM/controles que nao aparecem para querySelector, mas estao visiveis ao usuario.
