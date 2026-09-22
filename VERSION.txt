@@ -1,27 +1,20 @@
-RoboPrecos Portable v0.4.5
+RoboPrecos Portable v0.4.6
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
-Login Power BI sem DOM.focus e sem teclado
-DOM.getFlattenedDocument com pierce=true
-DOM.resolveNode para controles reais
-Selecao somente de INPUT/BUTTON visiveis
-Visibilidade validada por getBoundingClientRect + getComputedStyle
-Email e senha aplicados pelo setter nativo + input/change
-Botoes acionados por click() direto
-Valor aplicado e confirmado antes de avancar
-Elimina erro Element is not focusable
-singleSignOn nao e considerado autenticado
-Link do relatorio aberto somente apos login completo
-Classificacao de mes corrente por chave AAAAMM
-Reconhecimento de visuais via DOM + Chrome Accessibility Tree
-Fallback de tabelas virtualizadas via Accessibility
+Login Power BI direto em controles visiveis
+Mes corrente reconciliado com o Total do visual Power BI
+Soma Quantidade Cupons precisa bater com Total PRECO ERRADO
+Soma Desconto precisa bater com Total PRECO ERRADO
+Coleta corrente rejeitada se o Total nao reconciliar
+Modo 3 exibe TODAS as lojas coletadas
+Modo 3 lista IDs de empresa ausentes
+Snapshot CSV continua contendo a coleta completa
 Power BI sem exportacao intermediaria
 Mes atual: Resumo / Desconto por Motivo
 Mes fechado: Descontos Mes Anterior
 Somente motivo PRECO ERRADO
 Campos: Quantidade Cupons + Desconto
 Ausencia de loja/campo nao vira zero
-Modo de teste Power BI sem gravacao
 Planilha operacional na raiz da Plataforma RPA
 Backup antes de cada etapa de gravacao
 Sem instalacao | Sem Python | Sem Selenium | Sem GitHub Actions
