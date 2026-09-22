@@ -204,3 +204,20 @@ Fluxo executado:
 4. somente depois abrir o link do relatorio.
 
 Cada campo aguarda ate 20 segundos para ficar disponivel ao Chrome DevTools antes de considerar falha.
+
+
+## Login direto sem foco
+
+Na v0.4.5 o login do Power BI nao usa mais `DOM.focus`, teclado ou ENTER.
+
+O robo:
+
+1. atravessa os frames com `DOM.getFlattenedDocument(pierce=true)`;
+2. resolve cada INPUT/BUTTON real com `DOM.resolveNode`;
+3. verifica visibilidade por `getBoundingClientRect()` e `getComputedStyle()`;
+4. escolhe somente o controle visivel;
+5. preenche e-mail/senha pelo setter nativo do input + eventos `input/change`;
+6. chama `click()` diretamente no botao visivel;
+7. confirma o valor efetivamente aplicado antes de avancar.
+
+Isso elimina o erro `Element is not focusable`.
