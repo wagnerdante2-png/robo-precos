@@ -4,3 +4,5 @@ data/lojas.csv
 data/pda_credential.json
 output/
 *.log
+RoboPrecos_Backups/
+Controle de Auditoria de Pre*.xlsx
