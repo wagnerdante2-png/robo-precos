@@ -1,12 +1,13 @@
-RoboPrecos Portable v0.4.9
+RoboPrecos Portable v0.5.0
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
 LOGIN E NAVEGACAO CONGELADOS
-Tabela Power BI com varredura multi-scroll
-Testa grid + ancestrais + descendentes scrollaveis
-Percorre scroll progressivo + percentuais + fundo
-Escolhe candidato com maior numero de empresas materializadas
-Log diagnostico dos melhores scrolls
+Scroll interno Power BI via wheel NATIVO CDP
+Input.dispatchMouseEvent type=mouseWheel sobre o grid
+Varredura extremidade -> extremidade + passada reversa
+Linhas unificadas pelo numero da coluna EMPRESA
+Ordem visual 1->61 ou 61->1 indiferente
+Sem hardcode de quantidade de lojas
 Mes corrente reconciliado com o Total do visual Power BI
 Modo 3 exibe TODAS as lojas coletadas
 Power BI sem exportacao intermediaria
