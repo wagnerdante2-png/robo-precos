@@ -1,7 +1,7 @@
 Write-Host ""
 Write-Host "===================================================" -ForegroundColor Cyan
-Write-Host " ROBO PRECOS - COLETA PDA v0.2" -ForegroundColor Cyan
-Write-Host " AUDITORIA DE PRECOS | LOJA UNICA OU REDE INTEIRA" -ForegroundColor Cyan
+Write-Host " ROBO PRECOS - PDA + POWER BI v0.4" -ForegroundColor Cyan
+Write-Host " AUDITORIA DE PRECOS + DESCONTOS PRECO ERRADO" -ForegroundColor Cyan
 Write-Host " SEM INSTALACAO | SEM SELENIUM | SEM ACTIONS" -ForegroundColor Cyan
 Write-Host "===================================================" -ForegroundColor Cyan
 Write-Host ""
@@ -17,20 +17,23 @@ Set-Location $Root
 . (Join-Path $Root "src\pda.ps1")
 . (Join-Path $Root "src\network.ps1")
 . (Join-Path $Root "src\control_workbook.ps1")
+. (Join-Path $Root "src\bi.ps1")
+. (Join-Path $Root "src\discount_workbook.ps1")
 
-$socket = $null
+$pdaSocket = $null
 
 try {
     $config = Get-RoboPrecosConfig
 
     Write-Host "Modo de execucao:" -ForegroundColor Cyan
-    Write-Host "  1 - Testar uma unica loja"
-    Write-Host "  2 - Coletar rede e preencher planilha de controle"
+    Write-Host "  1 - Testar uma unica loja no PDA"
+    Write-Host "  2 - Fluxo completo: PDA + planilha + Power BI + descontos"
+    Write-Host "  3 - Testar somente a leitura do Power BI (NAO grava planilha)"
     $mode = Read-Host "Escolha [2]"
     if ([string]::IsNullOrWhiteSpace($mode)) { $mode = "2" }
 
-    if ($mode -notin @("1","2")) {
-        throw "Modo invalido. Use 1 ou 2."
+    if ($mode -notin @("1","2","3")) {
+        throw "Modo invalido. Use 1, 2 ou 3."
     }
 
     $store = ""
@@ -51,18 +54,33 @@ try {
     [void](ConvertTo-RoboPrecosDateKey $startDate)
     [void](ConvertTo-RoboPrecosDateKey $endDate)
 
-    # Mesma regra para modo 1 e modo 2: credencial precisa existir ANTES de abrir/coletar.
+    if ($mode -eq "3") {
+        Write-Host ""
+        Write-Host "MODO DE TESTE POWER BI - nenhuma celula da planilha sera alterada." -ForegroundColor Yellow
+
+        $discountResult = Invoke-RoboPrecosBiDiscountCollection -Config $config -StartDate $startDate -EndDate $endDate
+
+        Write-Host ""
+        Write-Host "AMOSTRA COLETADA DO POWER BI" -ForegroundColor Cyan
+        @($discountResult.Records | Select-Object -First 15 Loja,QuantidadeCupons,Desconto,Fonte) | Format-Table -AutoSize
+        Write-Host ("Total de lojas com valores validos: {0}" -f $discountResult.RecordCount) -ForegroundColor Green
+        Write-Host ""
+        Read-Host "Pressione ENTER para fechar"
+        return
+    }
+
+    # PDA: mesma logica validada anteriormente.
     Write-RoboLog "Validando credencial PDA antes de iniciar navegador/coleta."
     $null = Get-PdaCredential -Config $config
 
-    $socket = Start-RoboPrecosBrowser -Config $config
-    Ensure-PdaAuditPage -Socket $socket -Config $config
+    $pdaSocket = Start-RoboPrecosBrowser -Config $config
+    Ensure-PdaAuditPage -Socket $pdaSocket -Config $config
 
     if ($mode -eq "1") {
         Write-Host ""
         Write-Host ("Consultando {0} de {1} a {2}..." -f $store, $startDate, $endDate) -ForegroundColor Yellow
 
-        $result = Invoke-PdaAuditQuery -Socket $socket -Config $config -Store $store -StartDate $startDate -EndDate $endDate
+        $result = Invoke-PdaAuditQuery -Socket $pdaSocket -Config $config -Store $store -StartDate $startDate -EndDate $endDate
 
         Write-Host ""
         Write-Host "RESULTADO VALIDADO" -ForegroundColor Green
@@ -79,7 +97,8 @@ try {
         Write-Host ("Arquivo de teste: {0}" -f $testOutput) -ForegroundColor Cyan
     }
     else {
-        $summary = Invoke-RoboPrecosNetworkCollection -Socket $socket -Config $config -StartDate $startDate -EndDate $endDate -RetryPerStore 3
+        # 1) COLETA PDA
+        $summary = Invoke-RoboPrecosNetworkCollection -Socket $pdaSocket -Config $config -StartDate $startDate -EndDate $endDate -RetryPerStore 3
 
         if ([int]$summary.ErrorCount -gt 0) {
             Write-Host ""
@@ -90,9 +109,37 @@ try {
             Write-Host "Todas as lojas retornadas pelo PDA foram coletadas e validadas." -ForegroundColor Green
         }
 
+        # 2) GRAVACAO AUDITORIA
         $controlResult = Invoke-RoboPrecosControlWorkbook -Rows @($summary.Rows) -StartDate $startDate -EndDate $endDate
-
         Write-Host ("Planilha de controle: " + $controlResult.WorkbookPath) -ForegroundColor Cyan
+
+        # O PDA ja terminou. Fecha apenas o canal CDP antes de iniciar o Chrome dedicado do BI.
+        if ($pdaSocket) {
+            Close-CdpPage -Socket $pdaSocket
+            $pdaSocket = $null
+        }
+
+        # 3) POWER BI -> PRECO ERRADO
+        try {
+            $discountResult = Invoke-RoboPrecosBiDiscountCollection -Config $config -StartDate $startDate -EndDate $endDate
+
+            # 4) GRAVACAO SELETIVA DOS DESCONTOS
+            $discountWrite = Invoke-RoboPrecosDiscountWorkbook -DiscountResult $discountResult
+
+            Write-Host ""
+            Write-Host "FLUXO COMPLETO CONCLUIDO" -ForegroundColor Green
+            Write-Host ("Auditoria - lojas     : {0}" -f $controlResult.StoreCount)
+            Write-Host ("Descontos - coletadas : {0}" -f $discountResult.RecordCount)
+            Write-Host ("Descontos - gravadas  : {0}" -f $discountWrite.WrittenStoreCount)
+            Write-Host ("Arquivo final         : {0}" -f $discountWrite.WorkbookPath)
+        }
+        catch {
+            Write-RoboLog ("Auditoria ja foi gravada, mas o modulo de descontos falhou: " + $_.Exception.Message) "ERRO"
+            Write-Host ""
+            Write-Host "A AUDITORIA DO PDA FOI PRESERVADA." -ForegroundColor Yellow
+            Write-Host "O Power BI/descontos falhou antes de uma conclusao valida. Nenhum dado ausente foi convertido em zero." -ForegroundColor Yellow
+            throw
+        }
     }
 
     Write-Host ""
@@ -107,7 +154,7 @@ catch {
     exit 1
 }
 finally {
-    if ($socket) {
-        Close-CdpPage -Socket $socket
+    if ($pdaSocket) {
+        Close-CdpPage -Socket $pdaSocket
     }
 }
