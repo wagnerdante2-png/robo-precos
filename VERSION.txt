@@ -1,10 +1,10 @@
-RoboPrecos Portable v0.4.7
+RoboPrecos Portable v0.4.8
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
-LOGIN CONGELADO no fluxo validado da v0.4.5/v0.4.6
-Correcao exclusiva da transicao pos-login para o relatorio
-ERR_ABORTED durante redirect SSO tratado como transitorio
-URL real do relatorio confirmada antes de falhar
+LOGIN E NAVEGACAO CONGELADOS no fluxo validado
+Correcao exclusiva da leitura tardia do visual Power BI
+Grid/tabela aguardados por ate 45 segundos
+Retry DOM + Accessibility antes de falhar
 Mes corrente reconciliado com o Total do visual Power BI
 Modo 3 exibe TODAS as lojas coletadas
 Power BI sem exportacao intermediaria
