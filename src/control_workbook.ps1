@@ -1,37 +1,98 @@
-function Get-RoboPrecosControlWorkbookPath {
-    $downloads = Join-Path $env:USERPROFILE "Downloads"
-    if (-not (Test-Path -LiteralPath $downloads)) {
-        throw ("Pasta Downloads nao encontrada: " + $downloads)
+function Get-RoboPrecosOperationalRoot {
+    $robotParent = Split-Path -Parent $Root
+
+    if (-not [string]::IsNullOrWhiteSpace($robotParent)) {
+        $parentName = Split-Path -Leaf $robotParent
+
+        if ($parentName -ieq "robots") {
+            $platformRoot = Split-Path -Parent $robotParent
+
+            if ((-not [string]::IsNullOrWhiteSpace($platformRoot)) -and (Test-Path -LiteralPath (Join-Path $platformRoot "central.ps1") -PathType Leaf)) {
+                return [IO.Path]::GetFullPath($platformRoot)
+            }
+        }
+    }
+
+    return [IO.Path]::GetFullPath($Root)
+}
+
+function Get-RoboPrecosWorkbookMatches {
+    param([Parameter(Mandatory = $true)][string]$Directory)
+
+    if (-not (Test-Path -LiteralPath $Directory -PathType Container)) {
+        return @()
     }
 
     $cedilla = [char]0x00E7
-    $expectedName = "Controle de Auditoria de Pre" + $cedilla + "os.xlsx"
-    $expectedPath = Join-Path $downloads $expectedName
 
-    if (Test-Path -LiteralPath $expectedPath) {
+    return @(
+        Get-ChildItem -LiteralPath $Directory -File -Filter "*.xlsx" -ErrorAction SilentlyContinue |
+        Where-Object {
+            -not $_.Name.StartsWith("~$") -and
+            $_.BaseName -like ("Controle de Auditoria de Pre" + $cedilla + "os*")
+        }
+    )
+}
+
+function Get-RoboPrecosControlWorkbookPath {
+    $operationalRoot = Get-RoboPrecosOperationalRoot
+    Ensure-RoboDirectory $operationalRoot
+
+    $cedilla = [char]0x00E7
+    $expectedName = "Controle de Auditoria de Pre" + $cedilla + "os.xlsx"
+    $expectedPath = Join-Path $operationalRoot $expectedName
+
+    if (Test-Path -LiteralPath $expectedPath -PathType Leaf) {
         return $expectedPath
     }
 
-    $matches = @(
-        Get-ChildItem -LiteralPath $downloads -File -Filter "*.xlsx" -ErrorAction SilentlyContinue |
-        Where-Object {
-            -not $_.Name.StartsWith("~$") -and
-            $_.BaseName -like ("Controle de Auditoria de Pre" + $cedilla + "os*") -and
-            $_.DirectoryName -eq $downloads
-        }
-    )
+    $matches = @(Get-RoboPrecosWorkbookMatches -Directory $operationalRoot)
 
     if ($matches.Count -eq 1) {
-        Write-RoboLog ("Planilha localizada por nome compativel: " + $matches[0].FullName) "AVISO"
+        Write-RoboLog ("Planilha localizada na raiz operacional por nome compativel: " + $matches[0].FullName)
         return $matches[0].FullName
     }
 
     if ($matches.Count -gt 1) {
         $names = @($matches | ForEach-Object { $_.Name }) -join ", "
-        throw ("Mais de uma planilha de controle foi encontrada em Downloads. Deixe apenas o arquivo correto ou use o nome exato '" + $expectedName + "'. Encontrados: " + $names)
+        throw ("Mais de uma planilha de controle foi encontrada na raiz operacional. Mantenha apenas a planilha vigente. Encontrados: " + $names)
     }
 
-    throw ("Planilha de controle nao encontrada. Deixe o arquivo em: " + $expectedPath)
+    # Compatibilidade com instalacoes anteriores:
+    # se a planilha ainda estiver na pasta do robo ou em Downloads, copia uma vez
+    # para a raiz operacional. A partir desse ponto toda gravacao ocorre na raiz.
+    $legacyDirectories = @()
+
+    $robotRootFull = [IO.Path]::GetFullPath($Root)
+    if ($robotRootFull -ne $operationalRoot) {
+        $legacyDirectories += $robotRootFull
+    }
+
+    $downloads = Join-Path $env:USERPROFILE "Downloads"
+    if (Test-Path -LiteralPath $downloads -PathType Container) {
+        $legacyDirectories += [IO.Path]::GetFullPath($downloads)
+    }
+
+    foreach ($legacyDirectory in $legacyDirectories) {
+        $legacyMatches = @(Get-RoboPrecosWorkbookMatches -Directory $legacyDirectory)
+
+        if ($legacyMatches.Count -gt 1) {
+            $names = @($legacyMatches | ForEach-Object { $_.Name }) -join ", "
+            throw ("Mais de uma planilha de controle compativel foi encontrada em '" + $legacyDirectory + "'. Remova as copias antigas e mantenha apenas a vigente. Encontrados: " + $names)
+        }
+
+        if ($legacyMatches.Count -eq 1) {
+            $sourcePath = $legacyMatches[0].FullName
+            $destinationPath = Join-Path $operationalRoot $legacyMatches[0].Name
+
+            Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+            Write-RoboLog ("Planilha migrada para a raiz operacional. Origem: " + $sourcePath + " | Destino: " + $destinationPath) "AVISO"
+
+            return $destinationPath
+        }
+    }
+
+    throw ("Planilha de controle nao encontrada. Coloque 'Controle de Auditoria de Precos*.xlsx' na raiz operacional: " + $operationalRoot)
 }
 
 function Assert-RoboPrecosWorkbookUnlocked {
@@ -251,6 +312,30 @@ function Invoke-RoboPrecosControlWorkbook {
         $excel.DisplayAlerts = $false
 
         $workbook = $excel.Workbooks.Open($workbookPath, 0, $false)
+
+        # A nova planilha usa formulas para materializar novas lojas nas abas operacionais.
+        # Forca o recalculo antes de montar as whitelists para que uma loja recem-cadastrada
+        # seja reconhecida imediatamente, mesmo se o Excel do usuario estiver em modo manual.
+        $recalculated = $false
+
+        try {
+            $excel.Calculation = -4105 # xlCalculationAutomatic
+            $excel.CalculateFullRebuild()
+            $recalculated = $true
+        }
+        catch {
+            try {
+                $workbook.Calculate()
+                $recalculated = $true
+            }
+            catch {}
+        }
+
+        if (-not $recalculated) {
+            throw "Nao foi possivel recalcular a planilha antes da validacao das lojas."
+        }
+
+        Write-RoboLog "Planilha recalculada antes da leitura de lojas e periodos."
 
         $configs = @(Get-RoboPrecosExcelSheetNameConfig)
         $sheetMaps = @{}
