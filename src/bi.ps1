@@ -441,7 +441,7 @@ function Wait-RoboPrecosBiText {
         Start-Sleep -Milliseconds 700
     }
 
-    $diagnostic = ($lastCombined -replace '\\s+', ' ')
+    $diagnostic = ($lastCombined -replace '\s+', ' ')
     if ($diagnostic.Length -gt 500) {
         $diagnostic = $diagnostic.Substring(0, 500)
     }
@@ -520,6 +520,102 @@ function Clear-RoboPrecosBiEmpresaSlicer {
 
     Write-RoboLog ("Slicer Empresa Power BI: " + [string]$result)
     return [string]$result
+}
+
+function Get-RoboPrecosBiAxPropertyValue {
+    param(
+        $Node,
+        [Parameter(Mandatory = $true)][string]$PropertyName
+    )
+
+    if (-not $Node) { return "" }
+
+    $property = $Node.PSObject.Properties[$PropertyName]
+    if (-not $property -or -not $property.Value) { return "" }
+
+    $valueProperty = $property.Value.PSObject.Properties["value"]
+    if (-not $valueProperty) { return "" }
+
+    return [string]$valueProperty.Value
+}
+
+function Get-RoboPrecosBiAccessibilityRows {
+    param([System.Net.WebSockets.ClientWebSocket]$Socket)
+
+    [void](Invoke-CdpCommand -Socket $Socket -Method "Accessibility.enable")
+    $tree = Invoke-CdpCommand -Socket $Socket -Method "Accessibility.getFullAXTree"
+
+    if (-not $tree -or -not ($tree.PSObject.Properties.Name -contains "nodes")) {
+        return @()
+    }
+
+    $nodes = @($tree.nodes)
+    $byId = @{}
+
+    foreach ($node in $nodes) {
+        $idProperty = $node.PSObject.Properties["nodeId"]
+        if ($idProperty) {
+            $byId[[string]$idProperty.Value] = $node
+        }
+    }
+
+    $rows = New-Object System.Collections.ArrayList
+    $cellRoles = @("gridcell", "cell", "columnheader", "rowheader")
+
+    foreach ($rowNode in $nodes) {
+        $role = Get-RoboPrecosBiAxPropertyValue -Node $rowNode -PropertyName "role"
+        if ($role -ne "row") {
+            continue
+        }
+
+        $childIdsProperty = $rowNode.PSObject.Properties["childIds"]
+        if (-not $childIdsProperty) {
+            continue
+        }
+
+        $values = New-Object System.Collections.Generic.List[string]
+
+        foreach ($rootChildId in @($childIdsProperty.Value)) {
+            $queue = New-Object System.Collections.Generic.Queue[string]
+            $queue.Enqueue([string]$rootChildId)
+
+            while ($queue.Count -gt 0) {
+                $nodeId = $queue.Dequeue()
+                if (-not $byId.ContainsKey($nodeId)) {
+                    continue
+                }
+
+                $node = $byId[$nodeId]
+                $nodeRole = Get-RoboPrecosBiAxPropertyValue -Node $node -PropertyName "role"
+
+                if ($cellRoles -contains $nodeRole) {
+                    $value = Get-RoboPrecosBiAxPropertyValue -Node $node -PropertyName "name"
+                    if ([string]::IsNullOrWhiteSpace($value)) {
+                        $value = Get-RoboPrecosBiAxPropertyValue -Node $node -PropertyName "value"
+                    }
+
+                    # Mantem celula vazia para preservar a posicao das colunas.
+                    $values.Add([string]$value)
+                    continue
+                }
+
+                $children = $node.PSObject.Properties["childIds"]
+                if ($children) {
+                    foreach ($childId in @($children.Value)) {
+                        $queue.Enqueue([string]$childId)
+                    }
+                }
+            }
+        }
+
+        if ($values.Count -gt 1) {
+            [void]$rows.Add([PSCustomObject]@{
+                Cells = @($values.ToArray())
+            })
+        }
+    }
+
+    return @($rows)
 }
 
 function Get-RoboPrecosBiGridRows {
@@ -642,11 +738,17 @@ function Get-RoboPrecosBiGridRows {
 
     $result = $json | ConvertFrom-Json
 
-    if (-not $result -or -not [bool]$result.ok) {
-        throw ("Nao foi possivel localizar/ler a tabela esperada no Power BI. Detalhe: " + ($result | ConvertTo-Json -Compress -Depth 5))
+    if ($result -and [bool]$result.ok) {
+        return @($result.rows)
     }
 
-    return @($result.rows)
+    $axRows = @(Get-RoboPrecosBiAccessibilityRows -Socket $Socket)
+    if ($axRows.Count -gt 0) {
+        Write-RoboLog ("Tabela Power BI lida pelo fallback AX: " + $axRows.Count + " linha(s) acessiveis.")
+        return @($axRows)
+    }
+
+    throw ("Nao foi possivel localizar/ler a tabela esperada no Power BI via DOM ou acessibilidade. Detalhe DOM: " + ($result | ConvertTo-Json -Compress -Depth 5))
 }
 
 function Get-RoboPrecosDiscountMode {
@@ -683,7 +785,7 @@ function ConvertFrom-RoboPrecosBiCurrentRows {
     $records = @{}
 
     foreach ($row in @($Rows)) {
-        $cells = @($row)
+        $cells = if ($row -and ($row.PSObject.Properties.Name -contains "Cells")) { @($row.Cells) } else { @($row) }
         if ($cells.Count -lt 3) { continue }
 
         $companyText = ([string]$cells[0]).Trim()
@@ -737,7 +839,7 @@ function ConvertFrom-RoboPrecosBiHistoricalRows {
     $records = @{}
 
     foreach ($row in @($Rows)) {
-        $cells = @($row)
+        $cells = if ($row -and ($row.PSObject.Properties.Name -contains "Cells")) { @($row.Cells) } else { @($row) }
         if ($cells.Count -lt 7) { continue }
 
         $year = 0
