@@ -1,12 +1,13 @@
-RoboPrecos Portable v0.5.4
+RoboPrecos Portable v0.5.5
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
 LOGIN PRESERVADO
 Chrome Power BI com UMA aba canonica por execucao
-Aba canonica ativada e trazida para frente
-Abas antigas do Chrome dedicado sao fechadas
-Mesmo target/socket usado em login, relatorio e coleta
-Viewport interno do visual DESCONTO POR MOTIVO
+Viewport interno do visual DESCONTO POR MOTIVO identificado
+Scroll interno via mouseWheel NATIVO do Chrome DevTools
+Nao altera scrollTop artificialmente
+Avanco confirmado por scrollTop ou mudanca da janela de EMPRESA
+Varredura completa + passada reversa
 Linhas identificadas pela coluna EMPRESA
 Ordem visual indiferente
 Conflito da mesma empresa interrompe a coleta
