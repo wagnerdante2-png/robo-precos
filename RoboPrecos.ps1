@@ -1,6 +1,6 @@
 Write-Host ""
 Write-Host "===================================================" -ForegroundColor Cyan
-Write-Host " ROBO PRECOS - PDA + POWER BI v0.4.5" -ForegroundColor Cyan
+Write-Host " ROBO PRECOS - PDA + POWER BI v0.4.6" -ForegroundColor Cyan
 Write-Host " AUDITORIA DE PRECOS + DESCONTOS PRECO ERRADO" -ForegroundColor Cyan
 Write-Host " SEM INSTALACAO | SEM SELENIUM | SEM ACTIONS" -ForegroundColor Cyan
 Write-Host "===================================================" -ForegroundColor Cyan
@@ -62,8 +62,22 @@ try {
 
         Write-Host ""
         Write-Host "AMOSTRA COLETADA DO POWER BI" -ForegroundColor Cyan
-        @($discountResult.Records | Select-Object -First 15 Loja,QuantidadeCupons,Desconto,Fonte) | Format-Table -AutoSize
+        @($discountResult.Records | Sort-Object Empresa | Select-Object Loja,Empresa,QuantidadeCupons,Desconto,Fonte) | Format-Table -AutoSize
         Write-Host ("Total de lojas com valores validos: {0}" -f $discountResult.RecordCount) -ForegroundColor Green
+
+        if ($discountResult.Integrity) {
+            Write-Host ("Soma de cupons coletada        : {0}" -f $discountResult.Integrity.SumQuantity) -ForegroundColor Cyan
+            Write-Host ("Soma de desconto coletada      : R$ {0}" -f ([double]$discountResult.Integrity.SumDiscount).ToString("N2",[Globalization.CultureInfo]::GetCultureInfo("pt-BR"))) -ForegroundColor Cyan
+
+            if ([string]$discountResult.Mode -eq "CURRENT") {
+                Write-Host ("Total do visual Power BI       : {0} cupons / R$ {1}" -f $discountResult.Integrity.VisualQuantity, ([double]$discountResult.Integrity.VisualDiscount).ToString("N2",[Globalization.CultureInfo]::GetCultureInfo("pt-BR"))) -ForegroundColor Green
+                Write-Host "Reconciliacao                   : OK" -ForegroundColor Green
+
+                if (@($discountResult.Integrity.MissingCompanies).Count -gt 0) {
+                    Write-Host ("IDs de empresa nao retornados   : " + (@($discountResult.Integrity.MissingCompanies) -join ", ")) -ForegroundColor Yellow
+                }
+            }
+        }
         Write-Host ""
         Read-Host "Pressione ENTER para fechar"
         return
