@@ -351,6 +351,51 @@ function Invoke-RoboPrecosBiLogin {
     throw "Timeout aguardando autenticacao no Power BI."
 }
 
+function Get-RoboPrecosBiAccessibilityText {
+    param([System.Net.WebSockets.ClientWebSocket]$Socket)
+
+    try {
+        [void](Invoke-CdpCommand -Socket $Socket -Method "Accessibility.enable")
+        $tree = Invoke-CdpCommand -Socket $Socket -Method "Accessibility.getFullAXTree"
+
+        if (-not $tree -or -not ($tree.PSObject.Properties.Name -contains "nodes")) {
+            return ""
+        }
+
+        $parts = New-Object System.Collections.Generic.List[string]
+
+        foreach ($node in @($tree.nodes)) {
+            $ignoredProp = $node.PSObject.Properties["ignored"]
+            if ($ignoredProp -and [bool]$ignoredProp.Value) {
+                continue
+            }
+
+            foreach ($propertyName in @("name", "value", "description")) {
+                $property = $node.PSObject.Properties[$propertyName]
+                if (-not $property -or -not $property.Value) {
+                    continue
+                }
+
+                $valueProperty = $property.Value.PSObject.Properties["value"]
+                if (-not $valueProperty) {
+                    continue
+                }
+
+                $text = ([string]$valueProperty.Value).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($text)) {
+                    $parts.Add($text)
+                }
+            }
+        }
+
+        return ($parts -join [Environment]::NewLine)
+    }
+    catch {
+        Write-RoboLog ("Fallback de acessibilidade do Power BI indisponivel: " + $_.Exception.Message) "AVISO"
+        return ""
+    }
+}
+
 function Wait-RoboPrecosBiText {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
@@ -360,26 +405,48 @@ function Wait-RoboPrecosBiText {
 
     $required = @($RequiredTexts | ForEach-Object { ConvertTo-RoboPrecosNormalizedText $_ })
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    $lastText = ""
+    $lastCombined = ""
+    $attempt = 0
 
     while ((Get-Date) -lt $deadline) {
-        $body = [string](Invoke-CdpExpression -Socket $Socket -Expression "(document.body && document.body.innerText) ? document.body.innerText : ''")
-        $lastText = ConvertTo-RoboPrecosNormalizedText $body
+        $attempt++
+
+        $body = ""
+        try {
+            $body = [string](Invoke-CdpExpression -Socket $Socket -Expression "(document.body && document.body.innerText) ? document.body.innerText : ''")
+        }
+        catch {}
+
+        $axText = ""
+        if (($attempt -eq 1) -or ($attempt % 3 -eq 0)) {
+            $axText = Get-RoboPrecosBiAccessibilityText -Socket $Socket
+        }
+
+        $lastCombined = ConvertTo-RoboPrecosNormalizedText ($body + [Environment]::NewLine + $axText)
 
         $all = $true
         foreach ($item in $required) {
-            if (-not $lastText.Contains($item)) {
+            if (-not $lastCombined.Contains($item)) {
                 $all = $false
                 break
             }
         }
 
-        if ($all) { return }
+        if ($all) {
+            $source = if (-not [string]::IsNullOrWhiteSpace($axText)) { "DOM/AX" } else { "DOM" }
+            Write-RoboLog ("Elementos Power BI reconhecidos via " + $source + ": " + ($RequiredTexts -join ", "))
+            return
+        }
 
-        Start-Sleep -Seconds 1
+        Start-Sleep -Milliseconds 700
     }
 
-    throw ("Power BI nao apresentou os elementos esperados: " + ($RequiredTexts -join ", "))
+    $diagnostic = ($lastCombined -replace '\\s+', ' ')
+    if ($diagnostic.Length -gt 500) {
+        $diagnostic = $diagnostic.Substring(0, 500)
+    }
+
+    throw ("Power BI nao apresentou os elementos esperados: " + ($RequiredTexts -join ", ") + ". Texto detectado: " + $diagnostic)
 }
 
 function Open-RoboPrecosBiPage {
@@ -623,7 +690,7 @@ function ConvertFrom-RoboPrecosBiCurrentRows {
         if ($companyText -notmatch '^\d+([.,]0+)?$') { continue }
 
         # No visual "DESCONTO POR MOTIVO", PRECO ERRADO e o ultimo par:
-        # CUPONS + DESCONTO. Células vazias anteriores permanecem como colunas.
+        # CUPONS + DESCONTO. Celulas vazias anteriores permanecem como colunas.
         if ($cells.Count -lt 9) { continue }
 
         $quantity = ConvertFrom-RoboPrecosBiInteger $cells[$cells.Count - 2]
@@ -745,8 +812,8 @@ function Invoke-RoboPrecosBiDiscountCollection {
             Write-Host ""
             Write-Host ("DESCONTOS: mes corrente {0} -> usando RESUMO / DESCONTO POR MOTIVO" -f $decision.MonthDate.ToString("MM/yyyy")) -ForegroundColor Cyan
 
-            Open-RoboPrecosBiPage -Socket $socket -Config $Config -Url ([string]$bi.summaryUrl) -RequiredTexts @("DESCONTO POR MOTIVO", "PREÇO ERRADO")
-            $rows = @(Get-RoboPrecosBiGridRows -Socket $socket -TitleContains "DESCONTO POR MOTIVO" -RequiredHeaders @("EMPRESA", "PREÇO ERRADO", "CUPONS", "DESCONTO"))
+            Open-RoboPrecosBiPage -Socket $socket -Config $Config -Url ([string]$bi.summaryUrl) -RequiredTexts @("DESCONTO POR MOTIVO", "PRECO ERRADO")
+            $rows = @(Get-RoboPrecosBiGridRows -Socket $socket -TitleContains "DESCONTO POR MOTIVO" -RequiredHeaders @("EMPRESA", "PRECO ERRADO", "CUPONS", "DESCONTO"))
             $records = @(ConvertFrom-RoboPrecosBiCurrentRows -Rows $rows)
         }
         else {
@@ -760,7 +827,7 @@ function Invoke-RoboPrecosBiDiscountCollection {
             }
             Start-Sleep -Seconds 2
 
-            $rows = @(Get-RoboPrecosBiGridRows -Socket $socket -RequiredHeaders @("ANO", "MÊS", "EMPRESA", "TIPO", "VALOR TOTAL", "DESCONTO", "QUANTIDADE CUPONS"))
+            $rows = @(Get-RoboPrecosBiGridRows -Socket $socket -RequiredHeaders @("ANO", "MES", "EMPRESA", "TIPO", "VALOR TOTAL", "DESCONTO", "QUANTIDADE CUPONS"))
             $records = @(ConvertFrom-RoboPrecosBiHistoricalRows -Rows $rows -MonthDate $decision.MonthDate)
         }
 
