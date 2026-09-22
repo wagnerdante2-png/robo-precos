@@ -1,13 +1,15 @@
-RoboPrecos Portable v0.4.4
+RoboPrecos Portable v0.4.5
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
-Login Power BI por estados + DOM achatado de frames
+Login Power BI sem DOM.focus e sem teclado
 DOM.getFlattenedDocument com pierce=true
-Email localizado em INPUT real mesmo dentro de frames
-Senha localizada em INPUT real mesmo dentro de frames
-Email e senha digitados via Input.insertText
-Botoes acionados via foco do backendNodeId + ENTER
-Espera de ate 20s pelos controles de login
+DOM.resolveNode para controles reais
+Selecao somente de INPUT/BUTTON visiveis
+Visibilidade validada por getBoundingClientRect + getComputedStyle
+Email e senha aplicados pelo setter nativo + input/change
+Botoes acionados por click() direto
+Valor aplicado e confirmado antes de avancar
+Elimina erro Element is not focusable
 singleSignOn nao e considerado autenticado
 Link do relatorio aberto somente apos login completo
 Classificacao de mes corrente por chave AAAAMM
