@@ -369,3 +369,24 @@ A cada execucao:
 Isso evita declarar autenticacao em uma aba de fundo enquanto outra aba visivel continua parada no login.
 
 O bloco de login nao foi alterado nesta mudanca.
+
+
+## Wheel nativo no viewport interno
+
+Na v0.5.5, o RoboPrecos continua identificando a scrollbar interna correta do visual
+DESCONTO POR MOTIVO, mas nao altera mais scrollTop artificialmente.
+
+O deslocamento e feito por Input.dispatchMouseEvent(type=mouseWheel) do Chrome,
+posicionado dentro do corpo da tabela.
+
+A cada passo:
+- le a janela atual de EMPRESA;
+- envia wheel nativo;
+- aguarda a virtualizacao do Power BI;
+- confirma se scrollTop ou a assinatura das empresas visiveis mudou;
+- acumula as linhas materializadas;
+- percorre ate a outra extremidade;
+- faz passada reversa;
+- reconcilia a soma final com o Total do visual.
+
+O bloco de login nao foi alterado.
