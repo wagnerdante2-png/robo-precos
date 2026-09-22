@@ -1,4 +1,5 @@
 $script:RoboPrecosBiDefaultConfig = [ordered]@{
+    loginUrl = "https://app.powerbi.com/"
     summaryUrl = "https://app.powerbi.com/groups/cb155eaa-6b0a-4190-ae3f-5447f2fb3b58/reports/13902a52-6ab0-4c33-b73c-5352e1c490df/5e1f3f49a475efe362c0?experience=power-bi"
     historicalUrl = "https://app.powerbi.com/groups/cb155eaa-6b0a-4190-ae3f-5447f2fb3b58/reports/13902a52-6ab0-4c33-b73c-5352e1c490df/d42a8bc5428005c25ae7?experience=power-bi"
     debugPort = 9224
@@ -218,7 +219,7 @@ function Start-RoboPrecosBiBrowser {
     }
 
     Wait-CdpEndpoint -Port $port -TimeoutSeconds 30
-    return (Connect-RoboPrecosBiTarget -Port $port -Url ([string]$bi.summaryUrl))
+    return (Connect-RoboPrecosBiTarget -Port $port -Url ([string]$bi.loginUrl))
 }
 
 function Get-RoboPrecosBiPageState {
@@ -226,32 +227,205 @@ function Get-RoboPrecosBiPageState {
 
     $expression = @'
 (() => {
-  const norm = s => (s || '').replace(/\s+/g,' ').trim().toLowerCase();
+  const norm = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+  const visible = e => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
   const body = document.body ? document.body.innerText : '';
-  const host = location.hostname || '';
+  const text = norm(body);
+  const host = (location.hostname || '').toLowerCase();
   const href = location.href || '';
-  const hasPassword = !!document.querySelector('input[type="password"], input[name="passwd"]');
-  const hasEmail = !!document.querySelector('input[type="email"], input[name="loginfmt"]');
-  const loginHost = host.includes('login.microsoftonline.com') || host.includes('login.live.com');
-  const powerBi = host.includes('app.powerbi.com');
+  const path = (location.pathname || '').toLowerCase();
+
+  const inputs = [...document.querySelectorAll('input')].filter(visible);
+  const password = inputs.find(e => (e.type || '').toLowerCase() === 'password' || (e.name || '').toLowerCase() === 'passwd');
+  const email = inputs.find(e => {
+    const t = (e.type || '').toLowerCase();
+    const n = (e.name || '').toLowerCase();
+    const p = norm(e.getAttribute('placeholder') || '');
+    return t === 'email' || n === 'loginfmt' || p.includes('email') || p.includes('e-mail');
+  });
+  const genericText = inputs.find(e => {
+    const t = (e.type || '').toLowerCase();
+    return t === 'text' || t === '' || t === 'email';
+  });
+
+  const microsoft = host.includes('login.microsoftonline.com') || host.includes('login.live.com');
+  const powerbi = host.includes('app.powerbi.com');
+  const singleSignOn = powerbi && path.includes('/singlesignon');
+
   let kind = 'OTHER';
-  if (loginHost || hasPassword || hasEmail) kind = 'LOGIN';
-  if (powerBi) kind = 'POWERBI';
+
+  if (singleSignOn || (powerbi && (
+      text.includes('insira seu endereco de email corporativo') ||
+      text.includes('inserir endereco de email') ||
+      text.includes('email corporativo')
+  ))) {
+    kind = 'POWERBI_EMAIL';
+  }
+  else if (microsoft && password) {
+    kind = 'MICROSOFT_PASSWORD';
+  }
+  else if (microsoft && (email || genericText) && (
+      text.includes('entrar') ||
+      text.includes('sign in') ||
+      text.includes('email') ||
+      text.includes('conta')
+  )) {
+    kind = 'MICROSOFT_EMAIL';
+  }
+  else if (microsoft && (
+      text.includes('continuar conectado') ||
+      text.includes('permanecer conectado') ||
+      text.includes('manter conectado') ||
+      text.includes('stay signed in') ||
+      !!document.querySelector('#idSIButton9')
+  )) {
+    kind = 'MICROSOFT_STAY';
+  }
+  else if (powerbi && !singleSignOn) {
+    kind = 'AUTHENTICATED';
+  }
+
   return {
     kind,
     host,
     href,
+    path,
     title: document.title || '',
     ready: document.readyState || '',
     body: body.slice(0,5000),
-    hasPassword,
-    hasEmail,
-    text: norm(body).slice(0,5000)
+    hasPassword: !!password,
+    hasEmail: !!email,
+    inputCount: inputs.length
   };
 })()
 '@
 
     return Invoke-CdpJsonExpression -Socket $Socket -Expression $expression
+}
+
+function Invoke-RoboPrecosBiLoginStep {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$Socket,
+        [Parameter(Mandatory = $true)]$State,
+        [Parameter(Mandatory = $true)]$Credential
+    )
+
+    $usernameJson = ([string]$Credential.Username | ConvertTo-Json -Compress)
+    $passwordJson = ([string]$Credential.Password | ConvertTo-Json -Compress)
+    $kindJson = ([string]$State.kind | ConvertTo-Json -Compress)
+
+    $expression = @"
+(async () => {
+  const kind = $kindJson;
+  const user = $usernameJson;
+  const pass = $passwordJson;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const norm = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+  const visible = e => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+
+  const setValue = (el, value) => {
+    if (!el) return false;
+    const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLElement.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc && desc.set) desc.set.call(el, value); else el.value = value;
+    el.dispatchEvent(new Event('input', {bubbles:true}));
+    el.dispatchEvent(new Event('change', {bubbles:true}));
+    return true;
+  };
+
+  const click = el => {
+    if (!el || !visible(el)) return false;
+    el.click();
+    return true;
+  };
+
+  const controls = () => [...document.querySelectorAll('button,input[type="submit"],input[type="button"],a')].filter(visible);
+
+  if (kind === 'POWERBI_EMAIL') {
+    const inputs = [...document.querySelectorAll('input')].filter(visible);
+    const email = inputs.find(e => {
+      const t = (e.type || '').toLowerCase();
+      const p = norm(e.getAttribute('placeholder') || '');
+      const n = (e.name || '').toLowerCase();
+      return t === 'email' || t === 'text' || t === '' || n.includes('email') || p.includes('email');
+    });
+    if (!email) return 'ERROR:POWERBI_EMAIL_INPUT_NOT_FOUND';
+
+    setValue(email, user);
+    await sleep(200);
+
+    const send = controls().find(e => {
+      const t = norm(e.innerText || e.value || e.textContent);
+      return t === 'enviar' || t === 'submit' || t === 'continuar' || t === 'continue';
+    }) || document.querySelector('button[type="submit"],input[type="submit"]');
+
+    if (!click(send)) return 'ERROR:POWERBI_EMAIL_SUBMIT_NOT_FOUND';
+    return 'POWERBI_EMAIL_SUBMITTED';
+  }
+
+  if (kind === 'MICROSOFT_EMAIL') {
+    const inputs = [...document.querySelectorAll('input')].filter(visible);
+    const email = inputs.find(e => {
+      const t = (e.type || '').toLowerCase();
+      const n = (e.name || '').toLowerCase();
+      return t === 'email' || n === 'loginfmt' || t === 'text';
+    });
+
+    if (email) {
+      setValue(email, user);
+      await sleep(200);
+    }
+
+    const account = [...document.querySelectorAll('[data-test-id],div,button,a')].find(e =>
+      visible(e) && norm(e.innerText || e.textContent) === norm(user)
+    );
+    if (account && !email) {
+      click(account);
+      return 'MICROSOFT_ACCOUNT_SELECTED';
+    }
+
+    const next = document.querySelector('#idSIButton9') || controls().find(e => {
+      const t = norm(e.innerText || e.value || e.textContent);
+      return t === 'avancar' || t === 'proximo' || t === 'next' || t === 'entrar' || t === 'sign in';
+    });
+
+    if (!click(next)) return 'ERROR:MICROSOFT_EMAIL_NEXT_NOT_FOUND';
+    return 'MICROSOFT_EMAIL_SUBMITTED';
+  }
+
+  if (kind === 'MICROSOFT_PASSWORD') {
+    const password = [...document.querySelectorAll('input')].find(e =>
+      visible(e) && ((e.type || '').toLowerCase() === 'password' || (e.name || '').toLowerCase() === 'passwd')
+    );
+    if (!password) return 'ERROR:MICROSOFT_PASSWORD_INPUT_NOT_FOUND';
+
+    setValue(password, pass);
+    await sleep(200);
+
+    const enter = document.querySelector('#idSIButton9') || controls().find(e => {
+      const t = norm(e.innerText || e.value || e.textContent);
+      return t === 'entrar' || t === 'sign in' || t === 'continuar' || t === 'continue';
+    });
+
+    if (!click(enter)) return 'ERROR:MICROSOFT_PASSWORD_SUBMIT_NOT_FOUND';
+    return 'MICROSOFT_PASSWORD_SUBMITTED';
+  }
+
+  if (kind === 'MICROSOFT_STAY') {
+    const yes = document.querySelector('#idSIButton9') || controls().find(e => {
+      const t = norm(e.innerText || e.value || e.textContent);
+      return t === 'sim' || t === 'yes' || t === 'continuar' || t === 'continue';
+    });
+
+    if (!click(yes)) return 'ERROR:MICROSOFT_STAY_YES_NOT_FOUND';
+    return 'MICROSOFT_STAY_CONFIRMED';
+  }
+
+  return 'WAITING:' + kind;
+})()
+"@
+
+    return [string](Invoke-CdpExpression -Socket $Socket -Expression $expression)
 }
 
 function Invoke-RoboPrecosBiLogin {
@@ -263,92 +437,48 @@ function Invoke-RoboPrecosBiLogin {
 
     $bi = Get-RoboPrecosBiConfig -Config $Config
     $deadline = (Get-Date).AddSeconds([int]$bi.loginTimeoutSeconds)
+    $lastKind = ""
     $manualNoticeShown = $false
 
     while ((Get-Date) -lt $deadline) {
         $state = Get-RoboPrecosBiPageState -Socket $Socket
+        $kind = if ($state) { [string]$state.kind } else { "EMPTY" }
 
-        if ($state -and [string]$state.kind -eq "POWERBI") {
-            Write-RoboLog "Sessao Power BI autenticada."
+        if ($kind -ne $lastKind) {
+            Write-RoboLog ("Estado login Power BI: " + $kind + " | " + [string]$state.href)
+            $lastKind = $kind
+        }
+
+        if ($kind -eq "AUTHENTICATED") {
+            Write-RoboLog ("Sessao Power BI autenticada de fato. URL: " + [string]$state.href)
             return
         }
 
-        $usernameJson = ([string]$Credential.Username | ConvertTo-Json -Compress)
-        $passwordJson = ([string]$Credential.Password | ConvertTo-Json -Compress)
+        if ($kind -in @("POWERBI_EMAIL","MICROSOFT_EMAIL","MICROSOFT_PASSWORD","MICROSOFT_STAY")) {
+            $action = Invoke-RoboPrecosBiLoginStep -Socket $Socket -State $state -Credential $Credential
 
-        $action = Invoke-CdpExpression -Socket $Socket -Expression @"
-(async () => {
-  const user = $usernameJson;
-  const pass = $passwordJson;
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const visible = e => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
-  const click = e => { if (!e) return false; e.click(); return true; };
+            if ($action.StartsWith("ERROR:")) {
+                throw ("Falha no estado " + $kind + ": " + $action)
+            }
 
-  const email = document.querySelector('input[type="email"], input[name="loginfmt"]');
-  if (email && visible(email)) {
-    email.focus();
-    email.value = user;
-    email.dispatchEvent(new Event('input',{bubbles:true}));
-    email.dispatchEvent(new Event('change',{bubbles:true}));
-    await sleep(150);
-    const next = document.querySelector('#idSIButton9, input[type="submit"], button[type="submit"]');
-    click(next);
-    return 'EMAIL_SUBMITTED';
-  }
-
-  const password = document.querySelector('input[type="password"], input[name="passwd"]');
-  if (password && visible(password)) {
-    password.focus();
-    password.value = pass;
-    password.dispatchEvent(new Event('input',{bubbles:true}));
-    password.dispatchEvent(new Event('change',{bubbles:true}));
-    await sleep(150);
-    const submit = document.querySelector('#idSIButton9, input[type="submit"], button[type="submit"]');
-    click(submit);
-    return 'PASSWORD_SUBMITTED';
-  }
-
-  const buttons = [...document.querySelectorAll('button,input[type="button"],input[type="submit"],a')].filter(visible);
-  const yes = buttons.find(e => {
-    const t = (e.innerText || e.value || e.textContent || '').replace(/\s+/g,' ').trim().toLowerCase();
-    return t === 'sim' || t === 'yes' || t === 'continuar' || t === 'continue';
-  });
-  if (yes) {
-    click(yes);
-    return 'CONFIRM_SUBMITTED';
-  }
-
-  const userChoice = [...document.querySelectorAll('*')].find(e => {
-    const t = (e.innerText || e.textContent || '').trim().toLowerCase();
-    return t === user.toLowerCase();
-  });
-  if (userChoice && visible(userChoice)) {
-    click(userChoice);
-    return 'ACCOUNT_SELECTED';
-  }
-
-  return 'WAITING';
-})()
-"@
-
-        if ($action -and [string]$action -ne "WAITING") {
-            Write-RoboLog ("Power BI login: " + [string]$action)
-            Start-Sleep -Seconds 2
+            Write-RoboLog ("Power BI login: " + $action)
+            Start-Sleep -Milliseconds 900
             continue
         }
 
         if (-not $manualNoticeShown) {
             Write-Host ""
-            Write-Host "Aguardando autenticacao do Power BI..." -ForegroundColor Yellow
-            Write-Host "Se a Microsoft solicitar MFA, aprovacao ou escolha de conta, conclua essa etapa na janela aberta." -ForegroundColor Yellow
-            Write-Host "O robo retomara automaticamente apos a autenticacao." -ForegroundColor DarkGray
+            Write-Host "Autenticacao Power BI em andamento." -ForegroundColor Yellow
+            Write-Host "O robo preenche automaticamente e-mail, senha e confirmacao de permanencia." -ForegroundColor Yellow
+            Write-Host "Se surgir MFA ou aprovacao externa, conclua apenas essa etapa manualmente." -ForegroundColor DarkGray
             $manualNoticeShown = $true
         }
 
-        Start-Sleep -Seconds 2
+        Start-Sleep -Milliseconds 700
     }
 
-    throw "Timeout aguardando autenticacao no Power BI."
+    $last = Get-RoboPrecosBiPageState -Socket $Socket
+    throw ("Timeout autenticando no Power BI. Ultimo estado: " + [string]$last.kind + " | URL: " + [string]$last.href)
 }
 
 function Get-RoboPrecosBiAccessibilityText {
@@ -460,8 +590,45 @@ function Open-RoboPrecosBiPage {
     $bi = Get-RoboPrecosBiConfig -Config $Config
     $credential = Get-RoboPrecosBiCredential -Config $Config
 
+    # REGRA: nunca navegar direto ao relatorio antes de concluir TODA a autenticacao.
+    $state = Get-RoboPrecosBiPageState -Socket $Socket
+    if (-not $state -or [string]$state.kind -ne "AUTHENTICATED") {
+        $loginUrl = [string]$bi.loginUrl
+        if ([string]::IsNullOrWhiteSpace($loginUrl)) {
+            $loginUrl = "https://app.powerbi.com/"
+        }
+
+        if (-not $state -or -not ([string]$state.href).StartsWith($loginUrl, [StringComparison]::OrdinalIgnoreCase)) {
+            Navigate-Cdp -Socket $Socket -Url $loginUrl -TimeoutSeconds ([int]$bi.pageLoadTimeoutSeconds)
+        }
+
+        Invoke-RoboPrecosBiLogin -Socket $Socket -Config $Config -Credential $credential
+    }
+
+    # Somente depois do estado AUTHENTICATED usa o endereco do relatorio.
+    Write-RoboLog ("Autenticacao Power BI concluida. Abrindo relatorio autorizado: " + $Url)
     Navigate-Cdp -Socket $Socket -Url $Url -TimeoutSeconds ([int]$bi.pageLoadTimeoutSeconds)
-    Invoke-RoboPrecosBiLogin -Socket $Socket -Config $Config -Credential $credential
+
+    # O link do relatorio nao pode retornar para singleSignOn/login.
+    $deadline = (Get-Date).AddSeconds([int]$bi.pageLoadTimeoutSeconds)
+    do {
+        $reportState = Get-RoboPrecosBiPageState -Socket $Socket
+
+        if ($reportState -and [string]$reportState.kind -eq "AUTHENTICATED" -and
+            ([string]$reportState.href).Contains("/reports/")) {
+            break
+        }
+
+        if ($reportState -and [string]$reportState.kind -in @("POWERBI_EMAIL","MICROSOFT_EMAIL","MICROSOFT_PASSWORD","MICROSOFT_STAY")) {
+            throw ("A sessao Power BI voltou ao login depois de abrir o relatorio. Estado: " + [string]$reportState.kind)
+        }
+
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    if (-not $reportState -or -not ([string]$reportState.href).Contains("/reports/")) {
+        throw ("Power BI nao chegou ao relatorio apos autenticacao. URL atual: " + [string]$reportState.href)
+    }
 
     if ($RequiredTexts -and $RequiredTexts.Count -gt 0) {
         Wait-RoboPrecosBiText -Socket $Socket -RequiredTexts $RequiredTexts -TimeoutSeconds ([int]$bi.pageLoadTimeoutSeconds)
@@ -765,18 +932,20 @@ function Get-RoboPrecosDiscountMode {
         throw "O fluxo de descontos e mensal. Data inicial e final precisam estar no mesmo mes."
     }
 
-    $target = Get-Date -Year $start.Year -Month $start.Month -Day 1 -Hour 0 -Minute 0 -Second 0
-    $current = Get-Date -Year (Get-Date).Year -Month (Get-Date).Month -Day 1 -Hour 0 -Minute 0 -Second 0
+    $now = Get-Date
+    $targetKey = ($start.Year * 100) + $start.Month
+    $currentKey = ($now.Year * 100) + $now.Month
+    $monthDate = [datetime]::new($start.Year, $start.Month, 1, 0, 0, 0)
 
-    if ($target -gt $current) {
-        throw ("Periodo futuro nao pode ser consultado no Power BI: " + $target.ToString("MM/yyyy"))
+    if ($targetKey -gt $currentKey) {
+        throw ("Periodo futuro nao pode ser consultado no Power BI: " + $monthDate.ToString("MM/yyyy"))
     }
 
-    if ($target -eq $current) {
-        return [PSCustomObject]@{ Mode="CURRENT"; MonthDate=$target }
+    if ($targetKey -eq $currentKey) {
+        return [PSCustomObject]@{ Mode="CURRENT"; MonthDate=$monthDate }
     }
 
-    return [PSCustomObject]@{ Mode="HISTORICAL"; MonthDate=$target }
+    return [PSCustomObject]@{ Mode="HISTORICAL"; MonthDate=$monthDate }
 }
 
 function ConvertFrom-RoboPrecosBiCurrentRows {
