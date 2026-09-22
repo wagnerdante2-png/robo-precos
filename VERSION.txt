@@ -1,10 +1,12 @@
-RoboPrecos Portable v0.5.2
+RoboPrecos Portable v0.5.3
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
-LOGIN/NAVEGACAO preservados
-Bloqueio de dupla submissao apos Enviar/Entrar/Sim
-Aguarda mudanca real de estado antes de nova acao
-Scroll interno Power BI via wheel NATIVO CDP
+LOGIN PRESERVADO BYTE A BYTE da v0.5.2
+Coleta restrita ao visual DESCONTO POR MOTIVO
+Identifica viewport vertical interno do visual
+Usa scrollHeight/clientHeight + geometria da borda direita
+Suporta role=scrollbar e aria-controls
+Percorre viewport interno topo->fundo + reverso
 Linhas identificadas pela coluna EMPRESA
 Ordem visual indiferente
 Conflito da mesma empresa interrompe a coleta
