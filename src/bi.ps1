@@ -1556,6 +1556,9 @@ function Get-RoboPrecosBiGridRows {
   const thumbTravel=Math.max(1,trackHeight-thumbHeight);
   const scrollRatio=maxScroll>0 ? Math.max(0,Math.min(1,scrollTop/maxScroll)) : 0;
   const thumbCenterY=sr.top+(thumbHeight/2)+(thumbTravel*scrollRatio);
+  const scrollbarWidth=Math.max(0,Number(scroller.el.offsetWidth||0)-Number(scroller.el.clientWidth||0));
+  const scrollbarHalf=scrollbarWidth>0 ? Math.max(3,Math.min(12,scrollbarWidth/2)) : 6;
+  const dragX=Math.max(2,Math.min(innerWidth-2,sr.right-scrollbarHalf));
 
   return JSON.stringify({
     ok:true,
@@ -1576,7 +1579,8 @@ function Get-RoboPrecosBiGridRows {
       thumbHeight,
       thumbTravel,
       thumbCenterY,
-      dragX:Math.max(2,Math.min(innerWidth-2,sr.right-6)),
+      scrollbarWidth,
+      dragX,
       rect:{left:sr.left,top:sr.top,right:sr.right,bottom:sr.bottom,width:sr.width,height:sr.height}
     }
   });
