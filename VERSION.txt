@@ -1,13 +1,14 @@
-RoboPrecos Portable v0.5.5
+RoboPrecos Portable v0.5.6
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
 LOGIN PRESERVADO
 Chrome Power BI com UMA aba canonica por execucao
 Viewport interno do visual DESCONTO POR MOTIVO identificado
-Scroll interno via mouseWheel NATIVO do Chrome DevTools
-Nao altera scrollTop artificialmente
-Avanco confirmado por scrollTop ou mudanca da janela de EMPRESA
-Varredura completa + passada reversa
+SEM loop de mouseWheel
+Scrollbar interna controlada por drag fisico do thumb
+mousePressed + mouseMoved + mouseReleased via Chrome DevTools
+Watchdog: aborta apos 3 tentativas sem movimento
+Varredura percentual 0% -> 100% + passada reversa
 Linhas identificadas pela coluna EMPRESA
 Ordem visual indiferente
 Conflito da mesma empresa interrompe a coleta
