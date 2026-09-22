@@ -390,3 +390,19 @@ A cada passo:
 - reconcilia a soma final com o Total do visual.
 
 O bloco de login nao foi alterado.
+
+
+## Drag fisico da scrollbar interna
+
+Na v0.5.6 foi removido o loop de wheel que podia ficar piscando sem progresso.
+
+A coleta agora:
+- identifica a scrollbar interna do visual DESCONTO POR MOTIVO;
+- calcula a geometria do thumb;
+- pressiona o thumb com mousePressed nativo do Chrome;
+- arrasta o thumb por posicoes percentuais da barra;
+- confirma progresso por scrollTop ou mudanca da janela de EMPRESA;
+- se o thumb nao responder em 3 tentativas, aborta rapidamente;
+- faz passada reversa e reconciliacao final com o Total do BI.
+
+O bloco de login nao foi alterado.
