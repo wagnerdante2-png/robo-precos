@@ -1,6 +1,9 @@
-RoboPrecos Portable v0.4
+RoboPrecos Portable v0.4.1
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
+Correcao Windows PowerShell 5.1: codigo do BI sem literais acentuados
+Reconhecimento de visuais via DOM + Chrome Accessibility Tree
+Fallback de leitura de tabelas virtualizadas via Accessibility
 Power BI sem exportacao intermediaria
 Mes atual: Resumo / Desconto por Motivo
 Mes fechado: Descontos Mes Anterior
