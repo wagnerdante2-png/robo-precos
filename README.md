@@ -186,3 +186,21 @@ O robo usa a arvore de acessibilidade do Chrome para:
 - confirmar a tela de permanecer conectado.
 
 Isso cobre telas renderizadas em shadow DOM/controles que nao aparecem para querySelector, mas estao visiveis ao usuario.
+
+
+## Login atravessando frames
+
+A partir da v0.4.4, as telas de autenticacao do Power BI/Microsoft sao tratadas pelo DOM achatado do Chrome:
+
+`DOM.getFlattenedDocument(depth=-1, pierce=true)`
+
+Com isso o robo localiza controles mesmo quando estao dentro de frames internos.
+
+Fluxo executado:
+
+1. localizar INPUT de e-mail, focar, digitar a credencial fornecida e enviar;
+2. localizar INPUT de senha, focar, digitar a senha fornecida e entrar;
+3. localizar o botao Sim da tela Continuar conectado e confirmar;
+4. somente depois abrir o link do relatorio.
+
+Cada campo aguarda ate 20 segundos para ficar disponivel ao Chrome DevTools antes de considerar falha.
