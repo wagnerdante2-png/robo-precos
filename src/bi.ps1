@@ -1127,7 +1127,6 @@ function Clear-RoboPrecosBiEmpresaSlicer {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const norm = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
   const visible = e => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
-
   const getText = e => norm((e && (e.innerText || e.textContent)) || '');
 
   const labels = [...document.querySelectorAll('*')].filter(e =>
@@ -1153,8 +1152,6 @@ function Clear-RoboPrecosBiEmpresaSlicer {
       if (node.querySelector('[role="listbox"]')) score += 40;
       if (r.height < 450) score += 25;
       if (r.width > 300) score += 10;
-
-      // Preferir o menor container que ainda contem o slicer.
       score -= Math.min(40, Math.round((r.width * r.height) / 100000));
 
       if (score > 0) candidates.push({node, score, area:r.width*r.height});
@@ -1251,44 +1248,164 @@ function Clear-RoboPrecosBiEmpresaSlicer {
     return false;
   };
 
-  const inspectMultiSelection = async slicer => {
+  const parseSelected = el => {
+    const ariaSelected=(el.getAttribute('aria-selected') || '').toLowerCase();
+    const ariaChecked=(el.getAttribute('aria-checked') || '').toLowerCase();
+    const checkbox=el.querySelector('input[type="checkbox"]');
+
+    if (ariaSelected === 'true' || ariaChecked === 'true') return true;
+    if (ariaSelected === 'false' || ariaChecked === 'false') return false;
+    if (checkbox) return !!checkbox.checked;
+
+    // Power BI frequentemente representa o item por elemento pai/filho.
+    for (let i=0,node=el; i<3 && node; i++,node=node.parentElement) {
+      const as=(node.getAttribute && node.getAttribute('aria-selected') || '').toLowerCase();
+      const ac=(node.getAttribute && node.getAttribute('aria-checked') || '').toLowerCase();
+      const cb=node.querySelector && node.querySelector('input[type="checkbox"]');
+      if (as === 'true' || ac === 'true') return true;
+      if (as === 'false' || ac === 'false') return false;
+      if (cb) return !!cb.checked;
+    }
+
+    return null;
+  };
+
+  const getCompanyOptions = () => {
+    const roleNodes=[...document.querySelectorAll(
+      '[role="option"],[role="menuitemcheckbox"],[role="checkbox"],[aria-selected],[aria-checked]'
+    )].filter(visible);
+
+    const out=[];
+    const seen=new Set();
+
+    for (const el of roleNodes) {
+      const raw=(el.innerText || el.textContent || '').replace(/\s+/g,' ').trim();
+      const m=raw.match(/\bML\s*0*(\d{1,4})\b/i);
+      if (!m) continue;
+
+      const id=String(parseInt(m[1],10));
+      const key=id+'@'+Math.round(el.getBoundingClientRect().top);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({el,id,selected:parseSelected(el)});
+    }
+
+    return out;
+  };
+
+  const findListScroller = companyOptions => {
+    const candidates=[];
+
+    for (const option of companyOptions) {
+      let node=option.el;
+      for (let i=0;i<10 && node;i++,node=node.parentElement) {
+        try {
+          const r=node.getBoundingClientRect();
+          const style=getComputedStyle(node);
+          const max=Math.max(0,(node.scrollHeight||0)-(node.clientHeight||0));
+
+          if (
+            visible(node) &&
+            max > 20 &&
+            r.height > 80 &&
+            r.width > 180 &&
+            (style.overflowY === 'auto' || style.overflowY === 'scroll' || max > r.height*0.25)
+          ) {
+            const area=r.width*r.height;
+            const score=max + (style.overflowY === 'auto' || style.overflowY === 'scroll' ? 500 : 0) - Math.min(300,area/5000);
+            candidates.push({el:node,score,area});
+          }
+        } catch {}
+      }
+    }
+
+    candidates.sort((a,b)=>(b.score-a.score)||(a.area-b.area));
+    return candidates.length ? candidates[0].el : null;
+  };
+
+  const inspectEntireMultiSelection = async slicer => {
     const summary = getSummary(slicer);
-    if (!summary || summary.text !== 'selecoes multiplas') return null;
+    if (!summary || summary.text !== 'selecoes multiplas') return 'NO_MULTI';
 
     summary.el.click();
     await sleep(700);
 
-    const optionLike = [...document.querySelectorAll('[role="option"],[role="menuitemcheckbox"],[role="checkbox"]')].filter(visible);
-    const companyOptions = optionLike.filter(el => /^ml\s*0*\d+$/i.test((el.innerText || el.textContent || '').trim()));
-
-    if (!companyOptions.length) {
-      // Fecha o dropdown se abriu, sem alterar selecao.
+    let options=getCompanyOptions();
+    if (!options.length) {
       try { summary.el.click(); } catch {}
-      return null;
+      return 'NO_OPTIONS';
     }
 
-    let anyExplicitUnselected=false;
-    let allExplicitSelected=true;
+    const scroller=findListScroller(options);
+    if (!scroller) {
+      // Sem scrollbar interna: se todas as opcoes existentes sao explicitamente selecionadas,
+      // a lista inteira cabe na tela e pode ser validada diretamente.
+      const anyUnselected=options.some(o=>o.selected===false);
+      const anyUnknown=options.some(o=>o.selected===null);
+      const count=new Set(options.map(o=>o.id)).size;
+      try { summary.el.click(); } catch {}
+      await sleep(250);
 
-    for (const el of companyOptions) {
-      const ariaSelected=(el.getAttribute('aria-selected') || '').toLowerCase();
-      const ariaChecked=(el.getAttribute('aria-checked') || '').toLowerCase();
-      const checkbox=el.querySelector('input[type="checkbox"]');
-
-      let selected=null;
-      if (ariaSelected === 'true' || ariaChecked === 'true') selected=true;
-      else if (ariaSelected === 'false' || ariaChecked === 'false') selected=false;
-      else if (checkbox) selected=!!checkbox.checked;
-
-      if (selected === false) anyExplicitUnselected=true;
-      if (selected !== true) allExplicitSelected=false;
+      if (anyUnselected) return 'PARTIAL_SELECTION';
+      if (anyUnknown) return 'FULL_LIST_SELECTION_UNKNOWN';
+      return 'FULL_LIST_ALL_SELECTED:' + count;
     }
 
+    const oldTop=scroller.scrollTop || 0;
+    const states=new Map();
+    let reachedBottom=false;
+    let lastTop=-1;
+    let guard=0;
+
+    const capture=() => {
+      for (const o of getCompanyOptions()) {
+        if (!states.has(o.id)) states.set(o.id,o.selected);
+        else {
+          const prev=states.get(o.id);
+          if (prev === false || o.selected === false) states.set(o.id,false);
+          else if (prev === true || o.selected === true) states.set(o.id,true);
+          else states.set(o.id,null);
+        }
+      }
+    };
+
+    scroller.scrollTop=0;
+    await sleep(250);
+    capture();
+
+    while (guard++ < 120) {
+      const max=Math.max(0,scroller.scrollHeight-scroller.clientHeight);
+      const now=scroller.scrollTop || 0;
+
+      if (now >= max-2) {
+        reachedBottom=true;
+        capture();
+        break;
+      }
+
+      const step=Math.max(70,Math.floor(scroller.clientHeight*0.72));
+      scroller.scrollTop=Math.min(max,now+step);
+      await sleep(220);
+      capture();
+
+      const moved=scroller.scrollTop || 0;
+      if (moved === now || moved === lastTop) break;
+      lastTop=moved;
+    }
+
+    scroller.scrollTop=oldTop;
+    await sleep(150);
     try { summary.el.click(); } catch {}
     await sleep(250);
 
-    if (!anyExplicitUnselected && allExplicitSelected) return 'VISIBLE_OPTIONS_ALL_SELECTED';
-    return anyExplicitUnselected ? 'VISIBLE_OPTION_UNSELECTED' : null;
+    const entries=[...states.entries()];
+    const anyUnselected=entries.some(([,v])=>v===false);
+    const anyUnknown=entries.some(([,v])=>v===null);
+
+    if (!reachedBottom) return 'FULL_LIST_NOT_REACHED:' + entries.length;
+    if (anyUnselected) return 'PARTIAL_SELECTION';
+    if (anyUnknown) return 'FULL_LIST_SELECTION_UNKNOWN:' + entries.length;
+    return 'FULL_LIST_ALL_SELECTED:' + entries.length;
   };
 
   for (const label of labels) {
@@ -1298,7 +1415,9 @@ function Clear-RoboPrecosBiEmpresaSlicer {
     if (stateIsAll(slicer)) return 'ALREADY_ALL';
 
     const summary=getSummary(slicer);
+
     if (summary && summary.text === 'selecoes multiplas') {
+      // Primeiro tenta zerar qualquer selecao persistente pelo controle nativo do Power BI.
       if (await tryAccessibleClear(slicer)) {
         if (stateIsAll(slicer)) return 'CLEARED_BUTTON';
       }
@@ -1307,19 +1426,11 @@ function Clear-RoboPrecosBiEmpresaSlicer {
         if (stateIsAll(slicer)) return 'CLEARED_ERASER';
       }
 
-      const inspection=await inspectMultiSelection(slicer);
-      if (inspection === 'VISIBLE_OPTIONS_ALL_SELECTED') {
-        return 'MULTIPLE_ALL_VISIBLE_SELECTED';
-      }
-
-      if (inspection === 'VISIBLE_OPTION_UNSELECTED') {
-        return 'PARTIAL_SELECTION';
-      }
-
-      return 'MULTIPLE_UNCONFIRMED';
+      // Se o visual continua como "Selecoes multiplas", valida TODA a lista.
+      const inspection=await inspectEntireMultiSelection(slicer);
+      return inspection;
     }
 
-    // Alguns temas nao mostram texto Todos, mas o botao limpar pode existir.
     if (await tryAccessibleClear(slicer)) {
       if (stateIsAll(slicer)) return 'CLEARED_BUTTON';
     }
