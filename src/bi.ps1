@@ -1104,8 +1104,6 @@ function Get-RoboPrecosBiGridRows {
     $titleJson = ($TitleContains | ConvertTo-Json -Compress)
     $headersJson = ($RequiredHeaders | ConvertTo-Json -Compress)
 
-    # Descobre o grid correto e o viewport vertical interno, mas NAO altera scrollTop.
-    # O deslocamento sera feito apenas por eventos nativos e confiaveis do Chrome.
     $snapshotExpression = @"
 (() => {
   const title = $titleJson;
@@ -1113,14 +1111,6 @@ function Get-RoboPrecosBiGridRows {
   const norm = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toUpperCase();
   const titleN = norm(title);
   const reqN = (required || []).map(norm);
-
-  const visible = (el,r) => {
-    if (!el || !r || r.width < 2 || r.height < 2) return false;
-    try {
-      const s = getComputedStyle(el);
-      return s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity || 1) > 0;
-    } catch { return true; }
-  };
 
   const findGrid = () => {
     const grids = [...document.querySelectorAll('[role="grid"],[role="table"]')];
@@ -1147,187 +1137,84 @@ function Get-RoboPrecosBiGridRows {
     return JSON.stringify({ok:false,message:'GRID_NOT_FOUND',rows:[],companies:[]});
   }
 
-  let grid = selected.grid;
-  let gridRect = grid.getBoundingClientRect();
+  const grid = selected.grid;
 
-  // Menor ancestral que ainda corresponde ao visual DESCONTO POR MOTIVO.
   let visual = grid.parentElement || grid;
   let node = grid;
+  const initialRect = grid.getBoundingClientRect();
 
   for (let i=0;i<14 && node;i++,node=node.parentElement) {
     const text = norm(node.innerText || node.textContent);
     if (!titleN || !text.includes(titleN)) continue;
 
     const r = node.getBoundingClientRect();
-    const ratio = Math.max(1,(r.width*r.height)/Math.max(1,gridRect.width*gridRect.height));
-
-    if (r.width >= gridRect.width*0.85 && r.height >= gridRect.height*0.85 && ratio < 12) {
+    const ratio = Math.max(1,(r.width*r.height)/Math.max(1,initialRect.width*initialRect.height));
+    if (r.width >= initialRect.width*0.85 && r.height >= initialRect.height*0.85 && ratio < 12) {
       visual = node;
       break;
     }
   }
 
-  // Traz apenas o visual para a area util do navegador.
   try {
     visual.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
   } catch {}
 
-  gridRect = grid.getBoundingClientRect();
+  const rows = [];
+  const dataCells = [];
 
-  const verticalOverlap = (a,b) => Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));
-  const candidates = [];
-  const seen = new Set();
+  for (const row of [...grid.querySelectorAll('[role="row"]')]) {
+    let cells = [...row.querySelectorAll('[role="columnheader"],[role="gridcell"],[role="rowheader"]')];
+    let values = cells.map(c => (c.innerText || c.textContent || '').replace(/\s+/g,' ').trim());
 
-  const addCandidate = (source,reason,bonus=0) => {
-    if (!source || !(source instanceof Element)) return;
-
-    let el = source;
-    const role = (source.getAttribute('role') || '').toLowerCase();
-    const controls = source.getAttribute('aria-controls');
-
-    if (role === 'scrollbar' && controls) {
-      const controlled = document.getElementById(controls);
-      if (controlled) el = controlled;
+    if (!values.length) {
+      values = (row.innerText || '').split(/\r?\n|\t/).map(s=>s.trim());
     }
 
-    if (seen.has(el)) return;
-    seen.add(el);
+    if (!values.length) continue;
+    rows.push(values);
 
-    const r = el.getBoundingClientRect();
-    if (!visible(el,r)) return;
+    const company = String(values[0] || '').trim();
+    if (/^\d+$/.test(company)) {
+      let focusCell = cells.find(c => {
+        const r = c.getBoundingClientRect();
+        return r.width > 4 && r.height > 4;
+      });
 
-    const sh = Number(el.scrollHeight || 0);
-    const ch = Number(el.clientHeight || 0);
-    const range = sh-ch;
-    if (range <= 5 || ch < 20) return;
+      if (!focusCell && cells.length) focusCell = cells[0];
 
-    const gr = grid.getBoundingClientRect();
-    const overlap = verticalOverlap(r,gr);
-    const overlapRatio = overlap/Math.max(1,Math.min(r.height,gr.height));
-    const rightGap = Math.abs(r.right-gr.right);
-
-    let score = bonus + Math.min(180,range/3);
-    if (overlapRatio > 0.80) score += 150;
-    else if (overlapRatio > 0.45) score += 70;
-    if (rightGap <= 12) score += 180;
-    else if (rightGap <= 35) score += 110;
-    else if (rightGap <= 90) score += 45;
-    if (el.contains(grid) || grid.contains(el)) score += 70;
-
-    const oy = getComputedStyle(el).overflowY || '';
-    if (oy === 'auto' || oy === 'scroll') score += 150;
-    else if (oy === 'hidden') score += 30;
-
-    candidates.push({
-      el,reason,score,range,sh,ch,oy,
-      rect:{left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height}
-    });
-  };
-
-  addCandidate(visual,'visual-root',20);
-  for (const el of visual.querySelectorAll('*')) addCandidate(el,'visual-descendant',0);
-
-  for (const sb of visual.querySelectorAll('[role="scrollbar"]')) {
-    const orientation=(sb.getAttribute('aria-orientation')||'vertical').toLowerCase();
-    if (orientation==='vertical') addCandidate(sb,'aria-scrollbar',320);
-  }
-
-  // Prioriza tambem elementos encontrados exatamente na borda direita do grid.
-  const gr = grid.getBoundingClientRect();
-  const xs=[gr.right-3,gr.right-8,gr.right-14];
-  const ys=[gr.top+gr.height*0.25,gr.top+gr.height*0.5,gr.top+gr.height*0.75];
-
-  for (const x of xs) {
-    for (const y of ys) {
-      if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) continue;
-      for (const hit of document.elementsFromPoint(x,y)) {
-        let h=hit;
-        for (let i=0;i<7 && h;i++,h=h.parentElement) {
-          if (visual.contains(h) || h===visual) addCandidate(h,'right-edge-hit',240);
+      if (focusCell) {
+        const r = focusCell.getBoundingClientRect();
+        if (r.width > 4 && r.height > 4) {
+          dataCells.push({
+            company,
+            x:Math.max(3,Math.min(innerWidth-3,r.left + Math.min(r.width*0.5,40))),
+            y:Math.max(3,Math.min(innerHeight-3,r.top + r.height*0.5))
+          });
         }
       }
     }
   }
 
-  candidates.sort((a,b)=>b.score-a.score);
-  const scroller=candidates.length ? candidates[0] : null;
-
-  const readRows = () => {
-    const current=findGrid();
-    if (current && current.grid) grid=current.grid;
-
-    return [...grid.querySelectorAll('[role="row"]')].map(row => {
-      let cells=[...row.querySelectorAll('[role="columnheader"],[role="gridcell"],[role="rowheader"]')];
-      let values=cells.map(c=>(c.innerText||c.textContent||'').replace(/\s+/g,' ').trim());
-
-      if (!values.length) {
-        values=(row.innerText||'').split(/\r?\n|\t/).map(s=>s.trim());
-      }
-
-      return values;
-    }).filter(v=>v && v.length);
-  };
-
-  const rows=readRows();
-  const companies=rows.map(v=>String(v[0]||'').trim()).filter(v=>/^\d+$/.test(v));
-  const hasTotal=rows.some(v=>norm(String(v[0]||''))==='TOTAL');
-
-  if (!scroller) {
-    return JSON.stringify({
-      ok:false,
-      message:'VISUAL_SCROLL_CONTAINER_NOT_FOUND',
-      rows,companies,hasTotal
-    });
-  }
-
-  const sr=scroller.el.getBoundingClientRect();
-  const currentGridRect=grid.getBoundingClientRect();
-
-  // Wheel deve cair DENTRO do corpo da tabela, nao sobre o dashboard externo.
-  const x=Math.max(5,Math.min(innerWidth-5,currentGridRect.left+currentGridRect.width*0.55));
-  const y=Math.max(5,Math.min(innerHeight-5,currentGridRect.top+Math.min(currentGridRect.height*0.45,currentGridRect.height-20)));
-
-  const scrollHeight=Number(scroller.el.scrollHeight||0);
-  const clientHeight=Number(scroller.el.clientHeight||0);
-  const scrollTop=Number(scroller.el.scrollTop||0);
-  const maxScroll=Math.max(0,scrollHeight-clientHeight);
-  const trackHeight=Math.max(1,sr.height);
-  const thumbHeight=Math.max(18,Math.min(trackHeight,trackHeight*(clientHeight/Math.max(1,scrollHeight))));
-  const thumbTravel=Math.max(1,trackHeight-thumbHeight);
-  const scrollRatio=maxScroll>0 ? Math.max(0,Math.min(1,scrollTop/maxScroll)) : 0;
-  const thumbCenterY=sr.top+(thumbHeight/2)+(thumbTravel*scrollRatio);
-  const scrollbarWidth=Math.max(0,Number(scroller.el.offsetWidth||0)-Number(scroller.el.clientWidth||0));
-  const scrollbarHalf=scrollbarWidth>0 ? Math.max(3,Math.min(12,scrollbarWidth/2)) : 6;
-  const dragX=Math.max(2,Math.min(innerWidth-2,sr.right-scrollbarHalf));
+  const companies = rows.map(v=>String(v[0]||'').trim()).filter(v=>/^\d+$/.test(v));
+  const first = dataCells.length ? dataCells[0] : null;
+  const last = dataCells.length ? dataCells[dataCells.length-1] : null;
 
   return JSON.stringify({
     ok:true,
     rows,
     companies,
-    hasTotal,
     signature:companies.join(','),
     firstCompany:companies.length?companies[0]:'',
     lastCompany:companies.length?companies[companies.length-1]:'',
-    x,y,
-    scroller:{
-      reason:scroller.reason,
-      score:Math.round(scroller.score),
-      scrollTop,
-      scrollHeight,
-      clientHeight,
-      maxScroll,
-      thumbHeight,
-      thumbTravel,
-      thumbCenterY,
-      scrollbarWidth,
-      dragX,
-      rect:{left:sr.left,top:sr.top,right:sr.right,bottom:sr.bottom,width:sr.width,height:sr.height}
-    }
+    firstFocus:first,
+    lastFocus:last,
+    activeRole:document.activeElement ? (document.activeElement.getAttribute('role') || '') : '',
+    activeText:document.activeElement ? ((document.activeElement.innerText || document.activeElement.textContent || '').replace(/\s+/g,' ').trim().slice(0,120)) : ''
   });
 })()
 "@
 
-    function Get-RoboPrecosBiNativeGridSnapshot {
+    function Get-RoboPrecosBiGridSnapshot {
         $json = [string](Invoke-CdpExpression -Socket $Socket -Expression $snapshotExpression)
 
         if ([string]::IsNullOrWhiteSpace($json)) {
@@ -1342,209 +1229,215 @@ function Get-RoboPrecosBiGridRows {
         }
     }
 
-    function Add-RoboPrecosBiSnapshotRows {
+    function Add-RoboPrecosBiGridRows {
         param(
             [Parameter(Mandatory = $true)]$Snapshot,
             [Parameter(Mandatory = $true)][hashtable]$Store
         )
 
         foreach ($row in @($Snapshot.rows)) {
-            $values=@($row)
+            $values = @($row)
             if ($values.Count -eq 0) { continue }
 
-            $key=($values | ForEach-Object {[string]$_}) -join ([char]31)
-            $Store[$key]=$values
+            $key = ($values | ForEach-Object { [string]$_ }) -join ([char]31)
+            $Store[$key] = $values
         }
     }
 
-    function Move-RoboPrecosBiNativeScrollbar {
+    function Click-RoboPrecosBiGridPoint {
         param(
-            [Parameter(Mandatory = $true)]$Snapshot,
-            [Parameter(Mandatory = $true)][double]$TargetRatio
+            [double]$X,
+            [double]$Y
         )
-
-        $ratio=[Math]::Max(0,[Math]::Min(1,$TargetRatio))
-        $x=[double]$Snapshot.scroller.dragX
-        $startY=[double]$Snapshot.scroller.thumbCenterY
-        $trackTop=[double]$Snapshot.scroller.rect.top
-        $thumbHeight=[double]$Snapshot.scroller.thumbHeight
-        $thumbTravel=[double]$Snapshot.scroller.thumbTravel
-        $targetY=$trackTop+($thumbHeight/2)+($thumbTravel*$ratio)
 
         [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchMouseEvent" -Params @{
             type = "mouseMoved"
-            x = $x
-            y = $startY
+            x = $X
+            y = $Y
             button = "none"
         })
 
         [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchMouseEvent" -Params @{
             type = "mousePressed"
-            x = $x
-            y = $startY
+            x = $X
+            y = $Y
             button = "left"
             buttons = 1
             clickCount = 1
         })
 
-        $steps=8
-        for ($j=1;$j -le $steps;$j++) {
-            $yy=$startY+(($targetY-$startY)*($j/$steps))
-            [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchMouseEvent" -Params @{
-                type = "mouseMoved"
-                x = $x
-                y = $yy
-                button = "left"
-                buttons = 1
-            })
-            Start-Sleep -Milliseconds 45
-        }
-
         [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchMouseEvent" -Params @{
             type = "mouseReleased"
-            x = $x
-            y = $targetY
+            x = $X
+            y = $Y
             button = "left"
             buttons = 0
             clickCount = 1
         })
     }
 
-    $deadline=(Get-Date).AddSeconds(90)
-    $store=@{}
-    $snapshot=$null
-    $attempt=0
+    function Send-RoboPrecosBiGridKey {
+        param(
+            [Parameter(Mandatory = $true)][string]$Key,
+            [Parameter(Mandatory = $true)][string]$Code,
+            [Parameter(Mandatory = $true)][int]$VirtualKeyCode,
+            [int]$Modifiers = 0
+        )
+
+        [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
+            type = "rawKeyDown"
+            key = $Key
+            code = $Code
+            windowsVirtualKeyCode = $VirtualKeyCode
+            nativeVirtualKeyCode = $VirtualKeyCode
+            modifiers = $Modifiers
+        })
+
+        Start-Sleep -Milliseconds 40
+
+        [void](Invoke-CdpCommand -Socket $Socket -Method "Input.dispatchKeyEvent" -Params @{
+            type = "keyUp"
+            key = $Key
+            code = $Code
+            windowsVirtualKeyCode = $VirtualKeyCode
+            nativeVirtualKeyCode = $VirtualKeyCode
+            modifiers = $Modifiers
+        })
+    }
+
+    $deadline = (Get-Date).AddSeconds(45)
+    $store = @{}
+    $snapshot = $null
 
     do {
-        $attempt++
-        $snapshot=Get-RoboPrecosBiNativeGridSnapshot
-
-        if ($snapshot -and [bool]$snapshot.ok -and @($snapshot.rows).Count -gt 0) {
+        $snapshot = Get-RoboPrecosBiGridSnapshot
+        if ($snapshot -and [bool]$snapshot.ok -and @($snapshot.companies).Count -gt 0) {
             break
         }
 
-        if ($attempt -eq 1) {
-            Write-RoboLog "Aguardando materializacao do grid/viewport interno do Power BI." "AVISO"
-        }
-
-        Start-Sleep -Milliseconds 700
+        Start-Sleep -Milliseconds 600
     } while ((Get-Date) -lt $deadline)
 
-    if (-not $snapshot -or -not [bool]$snapshot.ok) {
-        throw "Power BI nao materializou o grid/viewport interno esperado."
+    if (-not $snapshot -or -not [bool]$snapshot.ok -or @($snapshot.companies).Count -eq 0) {
+        throw "Power BI nao materializou as linhas da tabela esperada."
     }
 
-    Add-RoboPrecosBiSnapshotRows -Snapshot $snapshot -Store $store
-
-    $x=[int]$snapshot.x
-    $y=[int]$snapshot.y
+    Add-RoboPrecosBiGridRows -Snapshot $snapshot -Store $store
 
     Write-RoboLog (
-        "Viewport interno confirmado. Scroller=" + [string]$snapshot.scroller.reason +
-        " | range=" + [string]$snapshot.scroller.maxScroll +
-        " | janela=" + [string]$snapshot.firstCompany +
-        "..." + [string]$snapshot.lastCompany
+        "Grid Power BI confirmado. Janela inicial=" +
+        [string]$snapshot.firstCompany + "..." + [string]$snapshot.lastCompany +
+        " | empresas visiveis=" + @($snapshot.companies).Count
     )
 
-    # 1) Prova rapida de que o thumb fisico esta sendo controlado.
-    # Se nao houver movimento real em 3 tentativas, aborta imediatamente.
-    $probeMoved=$false
-    $probeTargets=@(0.15,0.30,0.45)
-    $initialTop=[double]$snapshot.scroller.scrollTop
-    $initialSignature=[string]$snapshot.signature
+    # PASSO A: foca uma celula real da tabela.
+    if ($snapshot.lastFocus) {
+        Click-RoboPrecosBiGridPoint -X ([double]$snapshot.lastFocus.x) -Y ([double]$snapshot.lastFocus.y)
+        Start-Sleep -Milliseconds 250
+    }
 
-    foreach ($probeRatio in $probeTargets) {
-        Move-RoboPrecosBiNativeScrollbar -Snapshot $snapshot -TargetRatio $probeRatio
-        Start-Sleep -Milliseconds 550
+    # PASSO B: tenta ir ao inicio logico do grid com Ctrl+Home.
+    Send-RoboPrecosBiGridKey -Key "Home" -Code "Home" -VirtualKeyCode 36 -Modifiers 2
+    Start-Sleep -Milliseconds 500
 
-        $after=Get-RoboPrecosBiNativeGridSnapshot
-        if (-not $after -or -not [bool]$after.ok) { continue }
-
-        Add-RoboPrecosBiSnapshotRows -Snapshot $after -Store $store
-
-        $topChanged=[Math]::Abs(([double]$after.scroller.scrollTop)-$initialTop) -gt 1
-        $windowChanged=([string]$after.signature -ne $initialSignature)
-
+    $afterHome = Get-RoboPrecosBiGridSnapshot
+    if ($afterHome -and [bool]$afterHome.ok) {
+        Add-RoboPrecosBiGridRows -Snapshot $afterHome -Store $store
+        $snapshot = $afterHome
         Write-RoboLog (
-            "Teste drag scrollbar ratio=" + $probeRatio +
-            " | scrollTop=" + [string]$after.scroller.scrollTop +
-            "/" + [string]$after.scroller.maxScroll +
-            " | janela=" + [string]$after.firstCompany +
-            "..." + [string]$after.lastCompany +
-            " | mudou=" + [string]($topChanged -or $windowChanged)
-        )
-
-        if ($topChanged -or $windowChanged) {
-            $probeMoved=$true
-            $snapshot=$after
-            break
-        }
-    }
-
-    if (-not $probeMoved) {
-        throw (
-            "A scrollbar interna foi localizada, mas o thumb fisico nao respondeu a 3 tentativas de drag. " +
-            "Abortado rapidamente para nao deixar o relatorio piscando em loop."
+            "Grid Ctrl+Home -> janela=" +
+            [string]$snapshot.firstCompany + "..." + [string]$snapshot.lastCompany
         )
     }
 
-    # 2) Percorre a barra fisica por percentuais previsiveis.
-    # Cada posicao materializa uma janela diferente do visual virtualizado.
-    $targets=@(
-        0.00,0.08,0.16,0.24,0.32,0.40,0.48,
-        0.56,0.64,0.72,0.80,0.88,0.94,1.00
-    )
+    # PASSO C: percorre para frente com PageDown.
+    $stable = 0
+    $lastSignature = ""
 
-    foreach ($ratio in $targets) {
-        $beforeTop=[double]$snapshot.scroller.scrollTop
-        $beforeSignature=[string]$snapshot.signature
-
-        Move-RoboPrecosBiNativeScrollbar -Snapshot $snapshot -TargetRatio $ratio
-        Start-Sleep -Milliseconds 600
-
-        $after=Get-RoboPrecosBiNativeGridSnapshot
-        if (-not $after -or -not [bool]$after.ok) {
-            continue
+    for ($i=0; $i -lt 12; $i++) {
+        if ($snapshot.lastFocus) {
+            Click-RoboPrecosBiGridPoint -X ([double]$snapshot.lastFocus.x) -Y ([double]$snapshot.lastFocus.y)
+            Start-Sleep -Milliseconds 100
         }
 
-        Add-RoboPrecosBiSnapshotRows -Snapshot $after -Store $store
-
-        $topChanged=[Math]::Abs(([double]$after.scroller.scrollTop)-$beforeTop) -gt 1
-        $windowChanged=([string]$after.signature -ne $beforeSignature)
-
-        Write-RoboLog (
-            "Drag scrollbar ratio=" + $ratio +
-            " | scrollTop=" + [string]$after.scroller.scrollTop +
-            "/" + [string]$after.scroller.maxScroll +
-            " | janela=" + [string]$after.firstCompany +
-            "..." + [string]$after.lastCompany +
-            " | mudou=" + [string]($topChanged -or $windowChanged)
-        )
-
-        $snapshot=$after
-    }
-
-    # 3) Passada reversa em pontos intermediarios para cobrir reciclagem entre frames.
-    $reverseTargets=@(0.92,0.76,0.60,0.44,0.28,0.12,0.00)
-
-    foreach ($ratio in $reverseTargets) {
-        Move-RoboPrecosBiNativeScrollbar -Snapshot $snapshot -TargetRatio $ratio
+        Send-RoboPrecosBiGridKey -Key "PageDown" -Code "PageDown" -VirtualKeyCode 34
         Start-Sleep -Milliseconds 500
 
-        $after=Get-RoboPrecosBiNativeGridSnapshot
-        if (-not $after -or -not [bool]$after.ok) {
-            continue
-        }
+        $next = Get-RoboPrecosBiGridSnapshot
+        if (-not $next -or -not [bool]$next.ok) { continue }
 
-        Add-RoboPrecosBiSnapshotRows -Snapshot $after -Store $store
-        $snapshot=$after
+        Add-RoboPrecosBiGridRows -Snapshot $next -Store $store
+
+        $sig = [string]$next.signature
+        if ($sig -eq $lastSignature) { $stable++ } else { $stable = 0 }
+        $lastSignature = $sig
+        $snapshot = $next
+
+        Write-RoboLog (
+            "Grid PageDown " + $i +
+            " -> janela=" + [string]$snapshot.firstCompany +
+            "..." + [string]$snapshot.lastCompany
+        )
+
+        if ($stable -ge 2) { break }
     }
 
-    $finalRows=@($store.Values)
-    $companies=@(
+    # PASSO D: forca a outra extremidade com Ctrl+End.
+    if ($snapshot.lastFocus) {
+        Click-RoboPrecosBiGridPoint -X ([double]$snapshot.lastFocus.x) -Y ([double]$snapshot.lastFocus.y)
+        Start-Sleep -Milliseconds 100
+    }
+
+    Send-RoboPrecosBiGridKey -Key "End" -Code "End" -VirtualKeyCode 35 -Modifiers 2
+    Start-Sleep -Milliseconds 600
+
+    $afterEnd = Get-RoboPrecosBiGridSnapshot
+    if ($afterEnd -and [bool]$afterEnd.ok) {
+        Add-RoboPrecosBiGridRows -Snapshot $afterEnd -Store $store
+        $snapshot = $afterEnd
+        Write-RoboLog (
+            "Grid Ctrl+End -> janela=" +
+            [string]$snapshot.firstCompany + "..." + [string]$snapshot.lastCompany
+        )
+    }
+
+    # PASSO E: passada reversa com PageUp.
+    $stable = 0
+    $lastSignature = ""
+
+    for ($i=0; $i -lt 12; $i++) {
+        if ($snapshot.firstFocus) {
+            Click-RoboPrecosBiGridPoint -X ([double]$snapshot.firstFocus.x) -Y ([double]$snapshot.firstFocus.y)
+            Start-Sleep -Milliseconds 100
+        }
+
+        Send-RoboPrecosBiGridKey -Key "PageUp" -Code "PageUp" -VirtualKeyCode 33
+        Start-Sleep -Milliseconds 500
+
+        $next = Get-RoboPrecosBiGridSnapshot
+        if (-not $next -or -not [bool]$next.ok) { continue }
+
+        Add-RoboPrecosBiGridRows -Snapshot $next -Store $store
+
+        $sig = [string]$next.signature
+        if ($sig -eq $lastSignature) { $stable++ } else { $stable = 0 }
+        $lastSignature = $sig
+        $snapshot = $next
+
+        Write-RoboLog (
+            "Grid PageUp " + $i +
+            " -> janela=" + [string]$snapshot.firstCompany +
+            "..." + [string]$snapshot.lastCompany
+        )
+
+        if ($stable -ge 2) { break }
+    }
+
+    $finalRows = @($store.Values)
+    $companies = @(
         $finalRows |
         ForEach-Object {
-            $v=@($_)
+            $v = @($_)
             if ($v.Count -gt 0 -and ([string]$v[0]).Trim() -match '^\d+$') {
                 ([string]$v[0]).Trim()
             }
@@ -1553,12 +1446,12 @@ function Get-RoboPrecosBiGridRows {
     )
 
     Write-RoboLog (
-        "Varredura NATIVA concluida: " + $companies.Count +
-        " empresa(s) | IDs=" + ($companies -join ",")
+        "Varredura por teclado concluida: " +
+        $companies.Count + " empresa(s) | IDs=" + ($companies -join ",")
     )
 
     if ($companies.Count -eq 0) {
-        throw "A varredura nativa nao materializou nenhuma empresa."
+        throw "A varredura por teclado nao materializou nenhuma empresa."
     }
 
     return $finalRows
