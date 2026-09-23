@@ -1,26 +1,15 @@
-RoboPrecos Portable v0.5.6
-Build: 2026-09-22
+RoboPrecos Portable v0.5.7
+Build: 2026-09-23
 Fluxo integrado PDA + Power BI
-LOGIN PRESERVADO
-Chrome Power BI com UMA aba canonica por execucao
-Viewport interno do visual DESCONTO POR MOTIVO identificado
-SEM loop de mouseWheel
-Scrollbar interna controlada por drag fisico do thumb
-mousePressed + mouseMoved + mouseReleased via Chrome DevTools
-Watchdog: aborta apos 3 tentativas sem movimento
-Varredura percentual 0% -> 100% + passada reversa
+AUTENTICACAO CONGELADA BYTE A BYTE DA v0.4.5
+Bloco Connect-RoboPrecosBiTarget -> Open-RoboPrecosBiPage restaurado
+Sem aba canonica
+Sem fechamento automatico de abas antigas
+Sem helper de transicao posterior
+Sem navegacao especial posterior
+Coleta Power BI mantida separada do login
+Scrollbar interna com drag fisico + watchdog
 Linhas identificadas pela coluna EMPRESA
-Ordem visual indiferente
-Conflito da mesma empresa interrompe a coleta
 Sem hardcode de quantidade de lojas
-Mes corrente reconciliado com o Total do visual Power BI
-Modo 3 exibe TODAS as lojas coletadas
-Power BI sem exportacao intermediaria
-Mes atual: Resumo / Desconto por Motivo
-Mes fechado: Descontos Mes Anterior
-Somente motivo PRECO ERRADO
-Campos: Quantidade Cupons + Desconto
-Ausencia de loja/campo nao vira zero
-Planilha operacional na raiz da Plataforma RPA
-Backup antes de cada etapa de gravacao
+Reconciliacao final com Total do visual Power BI
 Sem instalacao | Sem Python | Sem Selenium | Sem GitHub Actions
