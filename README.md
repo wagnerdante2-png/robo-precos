@@ -406,3 +406,23 @@ A coleta agora:
 - faz passada reversa e reconciliacao final com o Total do BI.
 
 O bloco de login nao foi alterado.
+
+
+## Autenticacao congelada na v0.4.5
+
+A partir da v0.5.7, todo o bloco entre Connect-RoboPrecosBiTarget e Open-RoboPrecosBiPage
+foi restaurado byte a byte da v0.4.5, versao ja validada em execucao real.
+
+Isso inclui:
+- criacao/conexao do target CDP;
+- abertura do Chrome dedicado;
+- deteccao das telas Power BI/Microsoft;
+- preenchimento de e-mail;
+- preenchimento de senha;
+- confirmacao de permanencia;
+- navegacao para o relatorio.
+
+Mudancas posteriores de aba canonica, fechamento de abas, espera especial de transicao
+e navegacao especial foram removidas.
+
+Regra: ajustes futuros de coleta nao podem alterar esse bloco.
