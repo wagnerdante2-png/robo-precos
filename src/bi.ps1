@@ -141,75 +141,13 @@ function Get-RoboPrecosBiCredential {
     }
 }
 
-function Get-RoboPrecosBiPageTargets {
-    param([int]$Port)
-
-    $targets = @(Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/json" -f $Port) -UseBasicParsing -TimeoutSec 5)
-    return @($targets | Where-Object { $_.type -eq "page" })
-}
-
-function Set-RoboPrecosBiActiveTarget {
-    param(
-        [int]$Port,
-        [Parameter(Mandatory = $true)][string]$TargetId
-    )
-
-    try {
-        [void](Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/json/activate/{1}" -f $Port,$TargetId) -UseBasicParsing -TimeoutSec 5)
-    }
-    catch {
-        Write-RoboLog ("Chrome nao confirmou /json/activate para o target Power BI: " + $_.Exception.Message) "AVISO"
-    }
-}
-
-function Close-RoboPrecosBiOtherTargets {
-    param(
-        [int]$Port,
-        [Parameter(Mandatory = $true)][string]$KeepTargetId
-    )
-
-    $closed = 0
-    $pages = @(Get-RoboPrecosBiPageTargets -Port $Port)
-
-    foreach ($page in $pages) {
-        $id = [string]$page.id
-        if ([string]::IsNullOrWhiteSpace($id) -or $id -eq $KeepTargetId) {
-            continue
-        }
-
-        try {
-            [void](Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/json/close/{1}" -f $Port,$id) -UseBasicParsing -TimeoutSec 5)
-            $closed++
-        }
-        catch {
-            Write-RoboLog (
-                "Nao foi possivel fechar target antigo do Chrome dedicado: " +
-                $id + " | " + [string]$page.url
-            ) "AVISO"
-        }
-    }
-
-    Write-RoboLog ("Chrome Power BI: " + $closed + " aba(s) antiga(s) fechada(s).")
-}
-
 function Connect-RoboPrecosBiTarget {
     param(
         [int]$Port,
         [Parameter(Mandatory = $true)][string]$Url
     )
 
-    # Sempre cria UMA aba canonica nova para esta execucao.
     $target = New-CdpPageTarget -Port $Port -Url $Url
-
-    $targetId = [string]$target.id
-    if ([string]::IsNullOrWhiteSpace($targetId)) {
-        throw "Chrome DevTools criou a aba Power BI sem target id."
-    }
-
-    # Torna a aba criada a aba visivel ANTES de eliminar residuos de execucoes anteriores.
-    Set-RoboPrecosBiActiveTarget -Port $Port -TargetId $targetId
-    Close-RoboPrecosBiOtherTargets -Port $Port -KeepTargetId $targetId
-
     $wsUrl = [string]$target.webSocketDebuggerUrl
     $wsUrl = $wsUrl -replace 'ws://localhost:', 'ws://127.0.0.1:'
     $wsUrl = $wsUrl -replace 'ws://\[::1\]:', 'ws://127.0.0.1:'
@@ -232,34 +170,11 @@ function Connect-RoboPrecosBiTarget {
         throw ("Falha conectando a aba Power BI pelo Chrome DevTools: " + $_.Exception.Message)
     }
 
-    [void](Invoke-CdpCommand -Socket $socket -Method "Page.enable")
-
-    try {
-        [void](Invoke-CdpCommand -Socket $socket -Method "Page.bringToFront")
-    }
-    catch {
-        Write-RoboLog ("Nao foi possivel executar Page.bringToFront: " + $_.Exception.Message) "AVISO"
-    }
-
-    $probe = Invoke-CdpJsonExpression -Socket $socket -Expression @'
-(() => ({
-  marker:'ROBO_BI_CDP_OK',
-  href:location.href || '',
-  visibility:document.visibilityState || '',
-  title:document.title || ''
-}))()
-'@
-
-    if (-not $probe -or [string]$probe.marker -ne "ROBO_BI_CDP_OK") {
+    $probe = Invoke-CdpExpression -Socket $socket -Expression "'ROBO_BI_CDP_OK'"
+    if ([string]$probe -ne "ROBO_BI_CDP_OK") {
         try { $socket.Dispose() } catch {}
         throw "Canal CDP do Power BI nao respondeu ao teste Runtime.evaluate."
     }
-
-    Write-RoboLog (
-        "Target Power BI canonico conectado. ID=" + $targetId +
-        " | visibilidade=" + [string]$probe.visibility +
-        " | URL=" + [string]$probe.href
-    )
 
     return $socket
 }
@@ -300,7 +215,7 @@ function Start-RoboPrecosBiBrowser {
         Start-Process -FilePath $chromePath -ArgumentList $arguments | Out-Null
     }
     else {
-        Write-RoboLog "Chrome dedicado ao Power BI ja esta em execucao. Sera criada uma aba canonica e as abas antigas serao fechadas."
+        Write-RoboLog "Chrome dedicado ao Power BI ja esta em execucao."
     }
 
     Wait-CdpEndpoint -Port $port -TimeoutSeconds 30
@@ -822,42 +737,6 @@ function Invoke-RoboPrecosBiLoginStep {
     return ("WAITING:" + $kind)
 }
 
-function Wait-RoboPrecosBiLoginStateChange {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$Socket,
-        [Parameter(Mandatory = $true)][string]$PreviousKind,
-        [int]$TimeoutSeconds = 25
-    )
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    $last = $null
-
-    do {
-        Start-Sleep -Milliseconds 350
-
-        try {
-            $last = Get-RoboPrecosBiPageState -Socket $Socket
-        }
-        catch {
-            $last = $null
-        }
-
-        if ($last) {
-            $kind = [string]$last.kind
-
-            if ($kind -eq "AUTHENTICATED") {
-                return $last
-            }
-
-            if (-not [string]::IsNullOrWhiteSpace($kind) -and $kind -ne $PreviousKind) {
-                return $last
-            }
-        }
-    } while ((Get-Date) -lt $deadline)
-
-    return $last
-}
-
 function Invoke-RoboPrecosBiLogin {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
@@ -892,38 +771,6 @@ function Invoke-RoboPrecosBiLogin {
             }
 
             Write-RoboLog ("Power BI login: " + $action)
-
-            # Depois de clicar Enviar/Entrar/Sim, nunca repete a mesma acao
-            # enquanto a pagina ainda estiver concluindo o redirect.
-            if ($action -match 'SUBMITTED|CONFIRMED|SELECTED') {
-                $transition = Wait-RoboPrecosBiLoginStateChange -Socket $Socket -PreviousKind $kind -TimeoutSeconds 25
-
-                if ($transition) {
-                    $transitionKind = [string]$transition.kind
-                    Write-RoboLog (
-                        "Transicao login Power BI: " + $kind +
-                        " -> " + $transitionKind +
-                        " | " + [string]$transition.href
-                    )
-
-                    if ($transitionKind -eq "AUTHENTICATED") {
-                        Write-RoboLog ("Sessao Power BI autenticada de fato. URL: " + [string]$transition.href)
-                        return
-                    }
-
-                    if ($transitionKind -ne $kind) {
-                        $lastKind = ""
-                        continue
-                    }
-                }
-
-                throw (
-                    "Power BI nao mudou de tela apos a acao " + $action +
-                    " no estado " + $kind +
-                    ". O robo nao repetiu o clique para evitar dupla submissao."
-                )
-            }
-
             Start-Sleep -Milliseconds 900
             continue
         }
@@ -1041,127 +888,6 @@ function Wait-RoboPrecosBiText {
     throw ("Power BI nao apresentou os elementos esperados: " + ($RequiredTexts -join ", ") + ". Texto detectado: " + $diagnostic)
 }
 
-function Test-RoboPrecosBiTargetReportUrl {
-    param(
-        [string]$CurrentUrl,
-        [Parameter(Mandatory = $true)][string]$TargetUrl
-    )
-
-    if ([string]::IsNullOrWhiteSpace($CurrentUrl)) { return $false }
-
-    try {
-        $target = [Uri]$TargetUrl
-        $current = [Uri]$CurrentUrl
-
-        $targetPath = $target.AbsolutePath.TrimEnd('/')
-        $currentPath = $current.AbsolutePath.TrimEnd('/')
-
-        return (
-            $current.Host -ieq $target.Host -and
-            $currentPath.StartsWith($targetPath, [StringComparison]::OrdinalIgnoreCase)
-        )
-    }
-    catch {
-        return $CurrentUrl.StartsWith(($TargetUrl -split '\?')[0], [StringComparison]::OrdinalIgnoreCase)
-    }
-}
-
-function Wait-RoboPrecosBiTargetReport {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$Socket,
-        [Parameter(Mandatory = $true)][string]$TargetUrl,
-        [int]$TimeoutSeconds = 30
-    )
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    $lastState = $null
-
-    do {
-        try {
-            $lastState = Get-RoboPrecosBiPageState -Socket $Socket
-        }
-        catch {
-            $lastState = $null
-        }
-
-        if ($lastState -and (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$lastState.href) -TargetUrl $TargetUrl)) {
-            return $lastState
-        }
-
-        Start-Sleep -Milliseconds 400
-    } while ((Get-Date) -lt $deadline)
-
-    return $lastState
-}
-
-function Navigate-RoboPrecosBiReport {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$Socket,
-        [Parameter(Mandatory = $true)][string]$Url,
-        [int]$TimeoutSeconds = 120
-    )
-
-    # Depois do login o Power BI pode estar completando um redirect proprio.
-    # Primeiro damos uma janela curta para esse redirect terminar sozinho.
-    $autoState = Wait-RoboPrecosBiTargetReport -Socket $Socket -TargetUrl $Url -TimeoutSeconds 4
-    if ($autoState -and (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$autoState.href) -TargetUrl $Url)) {
-        Write-RoboLog ("Power BI chegou automaticamente ao relatorio: " + [string]$autoState.href)
-        return $autoState
-    }
-
-    [void](Invoke-CdpCommand -Socket $Socket -Method "Page.enable")
-    [void](Invoke-CdpCommand -Socket $Socket -Method "Runtime.enable")
-
-    $navigateResult = $null
-    $errorText = ""
-
-    try {
-        $navigateResult = Invoke-CdpCommand -Socket $Socket -Method "Page.navigate" -Params @{ url = $Url }
-        if ($navigateResult -and ($navigateResult.PSObject.Properties.Name -contains "errorText")) {
-            $errorText = [string]$navigateResult.errorText
-        }
-    }
-    catch {
-        $message = [string]$_.Exception.Message
-        if ($message -match 'ERR_ABORTED') {
-            $errorText = "net::ERR_ABORTED"
-        }
-        else {
-            throw
-        }
-    }
-
-    # ERR_ABORTED durante o redirect SSO e transitorio: nao e falha por si so.
-    if (-not [string]::IsNullOrWhiteSpace($errorText) -and $errorText -notmatch 'ERR_ABORTED') {
-        throw ("Chrome nao conseguiu navegar para " + $Url + ": " + $errorText)
-    }
-
-    if ($errorText -match 'ERR_ABORTED') {
-        Write-RoboLog "Power BI retornou ERR_ABORTED durante redirecionamento. Validando destino real antes de considerar falha." "AVISO"
-    }
-
-    $state = Wait-RoboPrecosBiTargetReport -Socket $Socket -TargetUrl $Url -TimeoutSeconds ([Math]::Min($TimeoutSeconds, 25))
-    if ($state -and (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$state.href) -TargetUrl $Url)) {
-        return $state
-    }
-
-    # Se o redirect anterior venceu a primeira navegacao, executa uma unica
-    # tentativa final via location.replace depois que o browser estabilizou.
-    $urlJson = ($Url | ConvertTo-Json -Compress)
-    try {
-        [void](Invoke-CdpExpression -Socket $Socket -Expression ("(() => { window.location.replace(" + $urlJson + "); return true; })()"))
-    }
-    catch {}
-
-    $state = Wait-RoboPrecosBiTargetReport -Socket $Socket -TargetUrl $Url -TimeoutSeconds ([Math]::Min($TimeoutSeconds, 30))
-    if ($state -and (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$state.href) -TargetUrl $Url)) {
-        return $state
-    }
-
-    $lastUrl = if ($state) { [string]$state.href } else { "" }
-    throw ("Power BI nao chegou ao relatorio apos autenticacao. URL atual: " + $lastUrl)
-}
-
 function Open-RoboPrecosBiPage {
     param(
         [System.Net.WebSockets.ClientWebSocket]$Socket,
@@ -1173,7 +899,7 @@ function Open-RoboPrecosBiPage {
     $bi = Get-RoboPrecosBiConfig -Config $Config
     $credential = Get-RoboPrecosBiCredential -Config $Config
 
-    # LOGIN CONGELADO: mesma maquina de estados que ja funcionou na v0.4.5.
+    # REGRA: nunca navegar direto ao relatorio antes de concluir TODA a autenticacao.
     $state = Get-RoboPrecosBiPageState -Socket $Socket
     if (-not $state -or [string]$state.kind -ne "AUTHENTICATED") {
         $loginUrl = [string]$bi.loginUrl
@@ -1188,16 +914,30 @@ function Open-RoboPrecosBiPage {
         Invoke-RoboPrecosBiLogin -Socket $Socket -Config $Config -Credential $credential
     }
 
-    # SOMENTE a transicao pos-login e tolerante ao redirect automatico do SSO.
+    # Somente depois do estado AUTHENTICATED usa o endereco do relatorio.
     Write-RoboLog ("Autenticacao Power BI concluida. Abrindo relatorio autorizado: " + $Url)
-    $reportState = Navigate-RoboPrecosBiReport -Socket $Socket -Url $Url -TimeoutSeconds ([int]$bi.pageLoadTimeoutSeconds)
+    Navigate-Cdp -Socket $Socket -Url $Url -TimeoutSeconds ([int]$bi.pageLoadTimeoutSeconds)
 
-    if (-not $reportState -or -not (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$reportState.href) -TargetUrl $Url)) {
-        $lastUrl = if ($reportState) { [string]$reportState.href } else { "" }
-        throw ("Power BI nao chegou ao relatorio apos autenticacao. URL atual: " + $lastUrl)
+    # O link do relatorio nao pode retornar para singleSignOn/login.
+    $deadline = (Get-Date).AddSeconds([int]$bi.pageLoadTimeoutSeconds)
+    do {
+        $reportState = Get-RoboPrecosBiPageState -Socket $Socket
+
+        if ($reportState -and [string]$reportState.kind -eq "AUTHENTICATED" -and
+            ([string]$reportState.href).Contains("/reports/")) {
+            break
+        }
+
+        if ($reportState -and [string]$reportState.kind -in @("POWERBI_EMAIL","MICROSOFT_EMAIL","MICROSOFT_PASSWORD","MICROSOFT_STAY")) {
+            throw ("A sessao Power BI voltou ao login depois de abrir o relatorio. Estado: " + [string]$reportState.kind)
+        }
+
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    if (-not $reportState -or -not ([string]$reportState.href).Contains("/reports/")) {
+        throw ("Power BI nao chegou ao relatorio apos autenticacao. URL atual: " + [string]$reportState.href)
     }
-
-    Write-RoboLog ("Relatorio Power BI confirmado: " + [string]$reportState.href)
 
     if ($RequiredTexts -and $RequiredTexts.Count -gt 0) {
         Wait-RoboPrecosBiText -Socket $Socket -RequiredTexts $RequiredTexts -TimeoutSeconds ([int]$bi.pageLoadTimeoutSeconds)
