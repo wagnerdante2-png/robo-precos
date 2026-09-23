@@ -38,6 +38,14 @@ function Get-RoboPrecosControlWorkbookPath {
     $operationalRoot = Get-RoboPrecosOperationalRoot
     Ensure-RoboDirectory $operationalRoot
 
+    $preferredWorkbookName = "Controle de Auditoria de Preços - Evoluída 2026-2028 - CORRIGIDA.xlsx"
+    $preferredWorkbookPath = Join-Path $operationalRoot $preferredWorkbookName
+
+    if (Test-Path -LiteralPath $preferredWorkbookPath -PathType Leaf) {
+        Write-RoboLog ("Planilha NOVA priorizada na raiz operacional: " + $preferredWorkbookPath)
+        return $preferredWorkbookPath
+    }
+
     $matches = @(Get-RoboPrecosWorkbookMatches -Directory $operationalRoot)
 
     if ($matches.Count -eq 1) {
@@ -47,7 +55,10 @@ function Get-RoboPrecosControlWorkbookPath {
 
     if ($matches.Count -gt 1) {
         $names = @($matches | ForEach-Object { $_.Name }) -join ", "
-        throw ("Mais de uma planilha de controle foi encontrada na raiz operacional. Mantenha apenas a planilha vigente. Encontrados: " + $names)
+        throw (
+            "Mais de uma planilha de controle foi encontrada na raiz operacional e a planilha nova prioritaria nao esta presente. " +
+            "Mantenha apenas a planilha vigente ou inclua '" + $preferredWorkbookName + "'. Encontrados: " + $names
+        )
     }
 
     # Compatibilidade com instalacoes anteriores:
