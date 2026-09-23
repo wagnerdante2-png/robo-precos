@@ -861,8 +861,15 @@ function Invoke-RoboPrecosBiLogin {
                     )
 
                     if ($transitionKind -eq "AUTHENTICATED") {
-                        Write-RoboLog ("Sessao Power BI autenticada de fato. URL: " + [string]$transition.href)
-                        return
+                        if (Test-RoboPrecosBiStableAuthenticated -Socket $Socket -State $transition -StableMilliseconds 2500) {
+                            $confirmedTransition = Get-RoboPrecosBiPageState -Socket $Socket
+                            Write-RoboLog ("Sessao Power BI autenticada de fato. URL: " + [string]$confirmedTransition.href)
+                            return
+                        }
+
+                        Write-RoboLog "AUTHENTICATED transitorio apos submissao; aguardando o redirect real sem repetir o clique." "AVISO"
+                        $lastKind = ""
+                        continue
                     }
 
                     if ($transitionKind -ne $kind) {
@@ -1090,7 +1097,11 @@ function Navigate-RoboPrecosBiReport {
     # Depois do login o Power BI pode estar completando um redirect proprio.
     # Primeiro damos uma janela curta para esse redirect terminar sozinho.
     $autoState = Wait-RoboPrecosBiTargetReport -Socket $Socket -TargetUrl $Url -TimeoutSeconds 4
-    if ($autoState -and (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$autoState.href) -TargetUrl $Url)) {
+    if (
+        $autoState -and
+        [string]$autoState.kind -eq "AUTHENTICATED" -and
+        (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$autoState.href) -TargetUrl $Url)
+    ) {
         Write-RoboLog ("Power BI chegou automaticamente ao relatorio: " + [string]$autoState.href)
         return $autoState
     }
@@ -1127,7 +1138,11 @@ function Navigate-RoboPrecosBiReport {
     }
 
     $state = Wait-RoboPrecosBiTargetReport -Socket $Socket -TargetUrl $Url -TimeoutSeconds ([Math]::Min($TimeoutSeconds, 25))
-    if ($state -and (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$state.href) -TargetUrl $Url)) {
+    if (
+        $state -and
+        [string]$state.kind -eq "AUTHENTICATED" -and
+        (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$state.href) -TargetUrl $Url)
+    ) {
         return $state
     }
 
@@ -1183,7 +1198,11 @@ function Open-RoboPrecosBiPage {
     Write-RoboLog ("Autenticacao Power BI concluida. Abrindo relatorio autorizado: " + $Url)
     $reportState = Navigate-RoboPrecosBiReport -Socket $Socket -Url $Url -TimeoutSeconds ([int]$bi.pageLoadTimeoutSeconds)
 
-    if (-not $reportState -or -not (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$reportState.href) -TargetUrl $Url)) {
+    if (
+        -not $reportState -or
+        [string]$reportState.kind -ne "AUTHENTICATED" -or
+        -not (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$reportState.href) -TargetUrl $Url)
+    ) {
         $lastUrl = if ($reportState) { [string]$reportState.href } else { "" }
         throw ("Power BI nao chegou ao relatorio apos autenticacao. URL atual: " + $lastUrl)
     }
