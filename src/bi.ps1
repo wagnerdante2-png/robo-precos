@@ -251,6 +251,7 @@ function Get-RoboPrecosBiPageState {
   const microsoft = host.includes('login.microsoftonline.com') || host.includes('login.live.com');
   const powerbi = host.includes('app.powerbi.com');
   const singleSignOn = powerbi && path.includes('/singlesignon');
+  const rootLanding = powerbi && (path === '/' || path === '');
 
   let kind = 'OTHER';
 
@@ -289,7 +290,7 @@ function Get-RoboPrecosBiPageState {
   )) {
     kind = 'MICROSOFT_EMAIL';
   }
-  else if (powerbi && !singleSignOn) {
+  else if (powerbi && !singleSignOn && !rootLanding) {
     kind = 'AUTHENTICATED';
   }
 
@@ -1155,7 +1156,11 @@ function Navigate-RoboPrecosBiReport {
     catch {}
 
     $state = Wait-RoboPrecosBiTargetReport -Socket $Socket -TargetUrl $Url -TimeoutSeconds ([Math]::Min($TimeoutSeconds, 30))
-    if ($state -and (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$state.href) -TargetUrl $Url)) {
+    if (
+        $state -and
+        [string]$state.kind -eq "AUTHENTICATED" -and
+        (Test-RoboPrecosBiTargetReportUrl -CurrentUrl ([string]$state.href) -TargetUrl $Url)
+    ) {
         return $state
     }
 
