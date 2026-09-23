@@ -1872,9 +1872,15 @@ function Invoke-RoboPrecosBiDiscountCollection {
 
             Open-RoboPrecosBiPage -Socket $socket -Config $Config -Url ([string]$bi.historicalUrl) -RequiredTexts @("Quantidade Cupons", "Valor Total", "Desconto")
             $slicerState = Clear-RoboPrecosBiEmpresaSlicer -Socket $socket
-            if ([string]$slicerState -eq "NOT_FOUND") {
-                throw "Nao foi possivel confirmar o filtro Empresa=Todos no historico do Power BI. Nenhum desconto sera gravado para evitar leitura parcial por filtro persistente."
+            $slicerOkStates = @("ALREADY_ALL", "CLEARED_BUTTON", "CLEARED_ERASER")
+            if ($slicerOkStates -notcontains [string]$slicerState) {
+                throw (
+                    "Nao foi possivel garantir Empresa=Todos no historico do Power BI. " +
+                    "Estado detectado: " + [string]$slicerState + ". " +
+                    "Nenhum desconto sera gravado para evitar leitura parcial por filtro persistente."
+                )
             }
+            Write-RoboLog ("Historico Power BI: Empresa=Todos confirmado por " + [string]$slicerState)
             Start-Sleep -Seconds 2
 
             $rows = @(Get-RoboPrecosBiGridRows -Socket $socket -RequiredHeaders @("ANO", "MES", "EMPRESA", "TIPO", "VALOR TOTAL", "DESCONTO", "QUANTIDADE CUPONS"))
