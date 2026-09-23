@@ -1,7 +1,9 @@
-RoboPrecos Portable v0.4.8
+RoboPrecos Portable v0.4.8-HF2
 Build: 2026-09-22
 Fluxo integrado PDA + Power BI
-LOGIN E NAVEGACAO CONGELADOS no fluxo validado
+LOGIN E NAVEGACAO PRESERVADOS no fluxo validado
+HF2: raiz app.powerbi.com nao e mais aceita como autenticacao
+HF2: AUTHENTICATED e relatorio exigem estabilidade antes de confirmar
 Correcao exclusiva da leitura tardia do visual Power BI
 Grid/tabela aguardados por ate 45 segundos
 Retry DOM + Accessibility antes de falhar
