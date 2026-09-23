@@ -1,15 +1,14 @@
-RoboPrecos Portable v0.5.7
+RoboPrecos Portable v0.5.8
 Build: 2026-09-23
 Fluxo integrado PDA + Power BI
 AUTENTICACAO CONGELADA BYTE A BYTE DA v0.4.5
-Bloco Connect-RoboPrecosBiTarget -> Open-RoboPrecosBiPage restaurado
-Sem aba canonica
-Sem fechamento automatico de abas antigas
-Sem helper de transicao posterior
-Sem navegacao especial posterior
-Coleta Power BI mantida separada do login
-Scrollbar interna com drag fisico + watchdog
+Coleta Power BI separada do login
+SEM wheel
+SEM drag de scrollbar
+Tabela tratada como grid focavel
+Ctrl+Home + PageDown + Ctrl+End + PageUp via Chrome DevTools
 Linhas identificadas pela coluna EMPRESA
+Ordem visual indiferente
 Sem hardcode de quantidade de lojas
 Reconciliacao final com Total do visual Power BI
 Sem instalacao | Sem Python | Sem Selenium | Sem GitHub Actions
