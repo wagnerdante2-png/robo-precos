@@ -1995,41 +1995,101 @@ function ConvertFrom-RoboPrecosBiHistoricalRows {
     )
 
     $records = @{}
+    $schemaRows = 0
+    $targetPeriodRows = 0
+    $priceErrorRows = 0
+    $validValueRows = 0
+    $observedPeriods = @{}
 
     foreach ($row in @($Rows)) {
         $cells = if ($row -and ($row.PSObject.Properties.Name -contains "Cells")) { @($row.Cells) } else { @($row) }
         if ($cells.Count -lt 7) { continue }
 
-        $year = 0
-        if (-not [int]::TryParse(([string]$cells[0]).Trim(), [ref]$year)) { continue }
+        # O DOM/AX do Power BI pode inserir celulas auxiliares antes/depois
+        # das sete colunas logicas. Em vez de assumir indice 0..6, procura
+        # uma janela que respeite:
+        # Ano | Mes | Empresa | Tipo | Valor Total | Desconto | Quantidade
+        $matched = $false
 
-        $month = Get-RoboPrecosMonthNumber ([string]$cells[1])
-        if ($month -le 0) { continue }
+        for ($offset = 0; $offset -le ($cells.Count - 7); $offset++) {
+            $year = 0
+            $yearText = ([string]$cells[$offset]).Trim()
+            if (-not [int]::TryParse($yearText, [ref]$year)) { continue }
+            if ($year -lt 2000 -or $year -gt 2100) { continue }
 
-        $companyText = ([string]$cells[2]).Trim()
-        if ($companyText -notmatch '^\d+([.,]0+)?$') { continue }
+            $month = Get-RoboPrecosMonthNumber ([string]$cells[$offset + 1])
+            if ($month -le 0) { continue }
 
-        $type = ConvertTo-RoboPrecosNormalizedText ([string]$cells[3])
-        if ($type -ne "PRECO ERRADO") { continue }
+            $companyText = ([string]$cells[$offset + 2]).Trim()
+            if ($companyText -notmatch '^\d+([.,]0+)?$') { continue }
 
-        if ($year -ne $MonthDate.Year -or $month -ne $MonthDate.Month) { continue }
+            $type = ConvertTo-RoboPrecosNormalizedText ([string]$cells[$offset + 3])
+            if ([string]::IsNullOrWhiteSpace($type)) { continue }
 
-        # Historico: Ano | Mes | Empresa | TIPO | Valor Total | Desconto | Quantidade Cupons
-        # Valor Total e deliberadamente ignorado.
-        $discount = ConvertFrom-RoboPrecosBiDecimal $cells[5]
-        $quantity = ConvertFrom-RoboPrecosBiInteger $cells[6]
+            $schemaRows++
+            $periodKey = ("{0:D4}-{1:D2}" -f $year, $month)
+            if (-not $observedPeriods.ContainsKey($periodKey)) {
+                $observedPeriods[$periodKey] = 0
+            }
+            $observedPeriods[$periodKey]++
 
-        if ($null -eq $quantity -or $null -eq $discount) { continue }
+            if ($year -ne $MonthDate.Year -or $month -ne $MonthDate.Month) {
+                $matched = $true
+                break
+            }
 
-        $store = ConvertTo-RoboStore $companyText
-        $records[$store] = [PSCustomObject]@{
-            Loja = $store
-            Empresa = [int][double]$companyText.Replace(",", ".")
-            QuantidadeCupons = [int]$quantity
-            Desconto = [double]$discount
-            Motivo = "PRECO ERRADO"
-            Fonte = "DESCONTOS MES ANTERIOR"
+            $targetPeriodRows++
+
+            if ($type -ne "PRECO ERRADO") {
+                $matched = $true
+                break
+            }
+
+            $priceErrorRows++
+
+            # Valor Total (offset+4) e deliberadamente ignorado.
+            $discount = ConvertFrom-RoboPrecosBiDecimal $cells[$offset + 5]
+            $quantity = ConvertFrom-RoboPrecosBiInteger $cells[$offset + 6]
+
+            if ($null -eq $quantity -or $null -eq $discount) {
+                $matched = $true
+                break
+            }
+
+            $validValueRows++
+
+            $store = ConvertTo-RoboStore $companyText
+            $records[$store] = [PSCustomObject]@{
+                Loja = $store
+                Empresa = [int][double]$companyText.Replace(",", ".")
+                QuantidadeCupons = [int]$quantity
+                Desconto = [double]$discount
+                Motivo = "PRECO ERRADO"
+                Fonte = "DESCONTOS MES ANTERIOR"
+            }
+
+            $matched = $true
+            break
         }
+    }
+
+    $periodSummary = @(
+        $observedPeriods.GetEnumerator() |
+        Sort-Object Name |
+        ForEach-Object { ([string]$_.Name + "=" + [string]$_.Value) }
+    ) -join ", "
+
+    Write-RoboLog (
+        "Historico parser: linhas=" + @($Rows).Count +
+        " | esquema=" + $schemaRows +
+        " | periodo alvo=" + $targetPeriodRows +
+        " | PRECO ERRADO=" + $priceErrorRows +
+        " | valores validos=" + $validValueRows +
+        " | lojas finais=" + $records.Count
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($periodSummary)) {
+        Write-RoboLog ("Historico periodos encontrados: " + $periodSummary)
     }
 
     return @($records.Values | Sort-Object Loja)
