@@ -1127,42 +1127,204 @@ function Clear-RoboPrecosBiEmpresaSlicer {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const norm = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
   const visible = e => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+
+  const getText = e => norm((e && (e.innerText || e.textContent)) || '');
+
   const labels = [...document.querySelectorAll('*')].filter(e =>
-    visible(e) && norm(e.innerText || e.textContent) === 'empresa'
+    visible(e) && getText(e) === 'empresa'
   );
 
-  for (const label of labels) {
+  if (!labels.length) return 'NOT_FOUND';
+
+  const findSlicer = label => {
+    const candidates = [];
     let node = label;
-    for (let level=0; level<8 && node; level++, node=node.parentElement) {
-      const clear = [...node.querySelectorAll('button,[role="button"]')].find(b => {
-        const t = norm((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '') + ' ' + (b.innerText || ''));
-        return t.includes('limpar') || t.includes('clear selection') || t.includes('clear filter');
-      });
-      if (clear && visible(clear)) {
-        clear.click();
+
+    for (let level=0; level<12 && node; level++, node=node.parentElement) {
+      const r = node.getBoundingClientRect();
+      const text = getText(node);
+
+      if (r.width < 180 || r.height < 35) continue;
+
+      let score = 0;
+      if (text.includes('selecoes multiplas')) score += 100;
+      if (text.includes('todos') || text.includes('all')) score += 80;
+      if (node.querySelector('[role="combobox"]')) score += 70;
+      if (node.querySelector('[role="listbox"]')) score += 40;
+      if (r.height < 450) score += 25;
+      if (r.width > 300) score += 10;
+
+      // Preferir o menor container que ainda contem o slicer.
+      score -= Math.min(40, Math.round((r.width * r.height) / 100000));
+
+      if (score > 0) candidates.push({node, score, area:r.width*r.height});
+    }
+
+    candidates.sort((a,b) => (b.score-a.score) || (a.area-b.area));
+    return candidates.length ? candidates[0].node : null;
+  };
+
+  const getSummary = slicer => {
+    const wanted = [...slicer.querySelectorAll('*')].filter(visible).map(e => ({
+      el:e,
+      text:getText(e),
+      rect:e.getBoundingClientRect()
+    })).filter(x =>
+      x.text === 'selecoes multiplas' ||
+      x.text === 'todos' ||
+      x.text === 'all'
+    ).sort((a,b) => (a.rect.width*a.rect.height)-(b.rect.width*b.rect.height));
+
+    return wanted.length ? wanted[0] : null;
+  };
+
+  const stateIsAll = slicer => {
+    const summary = getSummary(slicer);
+    return !!(summary && (summary.text === 'todos' || summary.text === 'all'));
+  };
+
+  const tryAccessibleClear = async slicer => {
+    const clickables = [...slicer.querySelectorAll('button,[role="button"],[tabindex],a')].filter(visible);
+
+    for (const el of clickables) {
+      const descriptor = norm(
+        (el.getAttribute('aria-label') || '') + ' ' +
+        (el.getAttribute('title') || '') + ' ' +
+        (el.getAttribute('data-tooltip') || '') + ' ' +
+        (el.innerText || '')
+      );
+
+      if (
+        descriptor.includes('limpar sele') ||
+        descriptor.includes('limpar filtro') ||
+        descriptor.includes('clear selection') ||
+        descriptor.includes('clear filter')
+      ) {
+        el.click();
         await sleep(1200);
-        return 'CLEARED_BUTTON';
-      }
-
-      const combo = node.querySelector('[role="combobox"]');
-      if (combo && visible(combo)) {
-        const current = norm(combo.innerText || combo.textContent);
-        if (current === 'todos' || current === 'all') return 'ALREADY_ALL';
-
-        combo.click();
-        await sleep(500);
-        const options = [...document.querySelectorAll('[role="option"],[role="menuitem"],[role="listbox"] *')].filter(visible);
-        const all = options.find(o => {
-          const t = norm(o.innerText || o.textContent);
-          return t === 'todos' || t === 'all' || t === 'selecionar tudo' || t === 'select all';
-        });
-        if (all) {
-          all.click();
-          await sleep(1200);
-          return 'CLEARED_OPTION';
-        }
+        return true;
       }
     }
+
+    return false;
+  };
+
+  const tryHeaderEraser = async (slicer,label) => {
+    const sr = slicer.getBoundingClientRect();
+    const lr = label.getBoundingClientRect();
+
+    const all = [...slicer.querySelectorAll('button,[role="button"],[tabindex],svg,path,g,div,span')]
+      .filter(visible)
+      .map(el => ({el, r:el.getBoundingClientRect()}))
+      .filter(x => {
+        const r=x.r;
+        if (r.width < 6 || r.height < 6 || r.width > 60 || r.height > 60) return false;
+        const nearRight = r.right >= sr.right - 55 && r.right <= sr.right + 8;
+        const headerBand = r.top >= lr.top - 15 && r.bottom <= lr.bottom + 28;
+        return nearRight && headerBand;
+      })
+      .sort((a,b) => {
+        const da=Math.abs(sr.right-a.r.right)+Math.abs(lr.top-a.r.top);
+        const db=Math.abs(sr.right-b.r.right)+Math.abs(lr.top-b.r.top);
+        return da-db;
+      });
+
+    for (const item of all) {
+      let target=item.el;
+      for (let i=0;i<4 && target && target.parentElement;i++) {
+        const role=(target.getAttribute && target.getAttribute('role')) || '';
+        const tab=(target.getAttribute && target.getAttribute('tabindex'));
+        if (target.tagName === 'BUTTON' || role === 'button' || tab !== null) break;
+        target=target.parentElement;
+      }
+
+      try {
+        target.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,clientX:item.r.left+item.r.width/2,clientY:item.r.top+item.r.height/2}));
+        target.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,clientX:item.r.left+item.r.width/2,clientY:item.r.top+item.r.height/2}));
+        target.click();
+        await sleep(1200);
+
+        if (stateIsAll(slicer)) return true;
+      } catch {}
+    }
+
+    return false;
+  };
+
+  const inspectMultiSelection = async slicer => {
+    const summary = getSummary(slicer);
+    if (!summary || summary.text !== 'selecoes multiplas') return null;
+
+    summary.el.click();
+    await sleep(700);
+
+    const optionLike = [...document.querySelectorAll('[role="option"],[role="menuitemcheckbox"],[role="checkbox"]')].filter(visible);
+    const companyOptions = optionLike.filter(el => /^ml\s*0*\d+$/i.test((el.innerText || el.textContent || '').trim()));
+
+    if (!companyOptions.length) {
+      // Fecha o dropdown se abriu, sem alterar selecao.
+      try { summary.el.click(); } catch {}
+      return null;
+    }
+
+    let anyExplicitUnselected=false;
+    let allExplicitSelected=true;
+
+    for (const el of companyOptions) {
+      const ariaSelected=(el.getAttribute('aria-selected') || '').toLowerCase();
+      const ariaChecked=(el.getAttribute('aria-checked') || '').toLowerCase();
+      const checkbox=el.querySelector('input[type="checkbox"]');
+
+      let selected=null;
+      if (ariaSelected === 'true' || ariaChecked === 'true') selected=true;
+      else if (ariaSelected === 'false' || ariaChecked === 'false') selected=false;
+      else if (checkbox) selected=!!checkbox.checked;
+
+      if (selected === false) anyExplicitUnselected=true;
+      if (selected !== true) allExplicitSelected=false;
+    }
+
+    try { summary.el.click(); } catch {}
+    await sleep(250);
+
+    if (!anyExplicitUnselected && allExplicitSelected) return 'VISIBLE_OPTIONS_ALL_SELECTED';
+    return anyExplicitUnselected ? 'VISIBLE_OPTION_UNSELECTED' : null;
+  };
+
+  for (const label of labels) {
+    const slicer=findSlicer(label);
+    if (!slicer) continue;
+
+    if (stateIsAll(slicer)) return 'ALREADY_ALL';
+
+    const summary=getSummary(slicer);
+    if (summary && summary.text === 'selecoes multiplas') {
+      if (await tryAccessibleClear(slicer)) {
+        if (stateIsAll(slicer)) return 'CLEARED_BUTTON';
+      }
+
+      if (await tryHeaderEraser(slicer,label)) {
+        if (stateIsAll(slicer)) return 'CLEARED_ERASER';
+      }
+
+      const inspection=await inspectMultiSelection(slicer);
+      if (inspection === 'VISIBLE_OPTIONS_ALL_SELECTED') {
+        return 'MULTIPLE_ALL_VISIBLE_SELECTED';
+      }
+
+      if (inspection === 'VISIBLE_OPTION_UNSELECTED') {
+        return 'PARTIAL_SELECTION';
+      }
+
+      return 'MULTIPLE_UNCONFIRMED';
+    }
+
+    // Alguns temas nao mostram texto Todos, mas o botao limpar pode existir.
+    if (await tryAccessibleClear(slicer)) {
+      if (stateIsAll(slicer)) return 'CLEARED_BUTTON';
+    }
+
+    return 'NOT_FOUND';
   }
 
   return 'NOT_FOUND';
