@@ -426,3 +426,19 @@ Mudancas posteriores de aba canonica, fechamento de abas, espera especial de tra
 e navegacao especial foram removidas.
 
 Regra: ajustes futuros de coleta nao podem alterar esse bloco.
+
+
+## Navegacao nativa pelo grid Power BI
+
+Na v0.5.8, a coleta abandona completamente wheel e drag de scrollbar.
+
+O visual e tratado como grid:
+- uma celula real da tabela recebe foco;
+- Ctrl+Home tenta posicionar no inicio logico;
+- PageDown percorre as janelas seguintes;
+- Ctrl+End tenta posicionar na outra extremidade;
+- PageUp faz a passada reversa;
+- as linhas sao acumuladas sempre pela coluna EMPRESA;
+- a reconciliacao final com o Total do visual continua obrigatoria.
+
+A autenticacao permanece congelada byte a byte da v0.4.5.
